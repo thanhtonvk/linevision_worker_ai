@@ -57,6 +57,67 @@ def save_cropped_image(image, output_folder, prefix, identifier):
 
     filename = f"{prefix}_{identifier}_{uuid.uuid4().hex[:8]}.jpg"
     filepath = os.path.join(output_folder, filename)
+    cv2.imwrite(filepath, image)
+    return filename
+
+
+def generate_file_url(filename, folder):
+    """Tạo URL để truy cập file"""
+    return url_for("serve_file", folder=folder, filename=filename, _external=True)
+
+
+def cleanup_old_files():
+    """
+    Xóa các file và folder cũ hơn 24 giờ trong OUTPUT_FOLDER và UPLOAD_FOLDER
+    Chạy trong background thread
+    """
+    while True:
+        try:
+            now = datetime.now()
+            cutoff_time = now - timedelta(hours=24)
+
+            # Kiểm tra từng folder trong OUTPUT_FOLDER
+            if os.path.exists(OUTPUT_FOLDER):
+                for folder_name in os.listdir(OUTPUT_FOLDER):
+                    folder_path = os.path.join(OUTPUT_FOLDER, folder_name)
+
+                    if os.path.isdir(folder_path):
+                        # Lấy thời gian tạo folder
+                        folder_mtime = datetime.fromtimestamp(
+                            os.path.getmtime(folder_path)
+                        )
+
+                        # Nếu folder cũ hơn 24 giờ, xóa nó
+                        if folder_mtime < cutoff_time:
+                            shutil.rmtree(folder_path)
+                            print(
+                                f"[CLEANUP] Deleted old folder: {folder_name} (created at {folder_mtime})"
+                            )
+
+            # Xóa video upload cũ trong UPLOAD_FOLDER
+            if os.path.exists(UPLOAD_FOLDER):
+                for file_name in os.listdir(UPLOAD_FOLDER):
+                    file_path = os.path.join(UPLOAD_FOLDER, file_name)
+
+                    if os.path.isfile(file_path):
+                        file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
+
+                        if file_mtime < cutoff_time:
+                            os.remove(file_path)
+                            print(
+                                f"[CLEANUP] Deleted old upload: {file_name} (created at {file_mtime})"
+                            )
+
+        except Exception as e:
+            print(f"[CLEANUP ERROR] {e}")
+
+        # Chạy cleanup mỗi 1 giờ
+        time.sleep(3600)
+
+
+# =============================================================================
+# API ENDPOINTS
+# =============================================================================
 
 
 @app.route("/api/health", methods=["GET"])
@@ -138,6 +199,7 @@ def analyze_video():
         result = {
             "request_id": request_id,
             "timestamp": datetime.now().isoformat(),
+            "expires_at": (datetime.now() + timedelta(hours=24)).isoformat(),
             "highest_speed_info": {},
             "best_players": [],
             "match_statistics": {},
@@ -216,9 +278,6 @@ def analyze_video():
                 video_filename, request_id
             )
 
-        # Xóa video upload để tiết kiệm dung lượng (tùy chọn)
-        # os.remove(video_path)
-
         # Trả về trực tiếp result JSON
         return jsonify(result), 200
 
@@ -289,202 +348,13 @@ def index():
     </ul>
     <h3>Response Format:</h3>
     <p>API trả về trực tiếp JSON result, không có wrapper {success: true, data: ...}</p>
-    """
-    return docs
-
-```
-        if not allowed_file(file.filename):
-            return (
-                jsonify({"error": f"Invalid file type. Allowed: {ALLOWED_EXTENSIONS}"}),
-                400,
-            )
-
-        # Lưu video upload
-        filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4().hex}_{filename}"
-        video_path = os.path.join(app.config["UPLOAD_FOLDER"], unique_filename)
-        file.save(video_path)
-
-        # Tạo thư mục output riêng cho request này
-        request_id = uuid.uuid4().hex
-        request_output_folder = os.path.join(app.config["OUTPUT_FOLDER"], request_id)
-        os.makedirs(request_output_folder, exist_ok=True)
-
-        # Lấy parameters từ request
-        ball_conf = float(request.form.get("ball_conf", 0.7))
-        person_conf = float(request.form.get("person_conf", 0.6))
-        angle_threshold = float(request.form.get("angle_threshold", 50))
-        intersection_threshold = float(request.form.get("intersection_threshold", 100))
-
-        # Parse court bounds
-        court_bounds_str = request.form.get("court_bounds", "100,100,400,500")
-        court_bounds = tuple(map(int, court_bounds_str.split(",")))
-
-        # Phân tích video
-        results = analyzer.analyze_video(
-            video_path=video_path,
-            ball_conf=ball_conf,
-            person_conf=person_conf,
-            angle_threshold=angle_threshold,
-            intersection_threshold=intersection_threshold,
-            court_bounds=court_bounds,
-        )
-
-        # Xử lý kết quả và tạo URLs - Trả về trực tiếp
-        result = {
-            "request_id": request_id,
-            "timestamp": datetime.now().isoformat(),
-            "highest_speed_info": {},
-            "best_players": [],
-            "match_statistics": {},
-            "visualization_video_url": None,
-        }
-
-        # 1. Xử lý highest speed info
-        highest_speed = results["highest_speed_info"]
-        cropped_filename = save_cropped_image(
-            highest_speed["cropped_image"],
-            request_output_folder,
-            "highest_speed",
-            "player",
-        )
-
-        result["highest_speed_info"] = {
-            "frame": highest_speed["frame"],
-            "time_seconds": round(highest_speed["time_seconds"], 2),
-            "velocity": round(highest_speed["velocity"], 2),
-            "person_id": highest_speed["person_id"],
-            "shoulder_angle": round(highest_speed["shoulder_angle"], 2),
-            "knee_bend_angle": round(highest_speed["knee_bend_angle"], 2),
-            "cropped_image_url": (
-                generate_file_url(cropped_filename, request_id)
-                if cropped_filename
-                else None
-            ),
-        }
-
-        # 2. Xử lý best players
-        for rank, player in enumerate(results["best_players"], 1):
-            cropped_filename = save_cropped_image(
-                player["cropped_image"],
-                request_output_folder,
-                f'player_{player["player_id"]}_rank_{rank}',
-                "crop",
-            )
-
-            player_data = {
-                "rank": rank,
-                "player_id": player["player_id"],
-                "score": round(player["score"], 2),
-                "in_court_ratio": round(player["in_court_ratio"], 4),
-                "avg_ball_speed": round(player["avg_ball_speed"], 2),
-                "avg_shoulder_angle": round(player["avg_shoulder_angle"], 2),
-                "avg_knee_bend_angle": round(player["knee_bend_angle"], 2),
-                "total_hits": player["total_hits"],
-                "cropped_image_url": (
-                    generate_file_url(cropped_filename, request_id)
-                    if cropped_filename
-                    else None
-                ),
-            }
-            result["best_players"].append(player_data)
-
-        # 3. Xử lý match statistics
-        stats = results["match_statistics"]
-        result["match_statistics"] = {
-            "rally_ratio": round(stats["rally_ratio"], 4),
-            "in_court_ratio": round(stats["in_court_ratio"], 4),
-            "out_court_ratio": round(stats["out_court_ratio"], 4),
-            "total_hits": stats["total_hits"],
-            "total_in_court": stats["total_in_court"],
-            "total_out_court": stats["total_out_court"],
-        }
-
-        # 4. Xử lý visualization video
-        if results["visualization_video_path"] and os.path.exists(
-            results["visualization_video_path"]
-        ):
-            # Copy video vào output folder
-            video_filename = f"visualization_{request_id}.mp4"
-            new_video_path = os.path.join(request_output_folder, video_filename)
-            shutil.copy2(results["visualization_video_path"], new_video_path)
-            result["visualization_video_url"] = generate_file_url(
-                video_filename, request_id
-            )
-
-        # Xóa video upload để tiết kiệm dung lượng (tùy chọn)
-        # os.remove(video_path)
-
-        # Trả về trực tiếp result JSON
-        return jsonify(result), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
-
-
-@app.route("/files/<folder>/<filename>")
-def serve_file(folder, filename):
-    """
-    Serve static files (images and videos)
-    """
-    try:
-        file_path = os.path.join(app.config["OUTPUT_FOLDER"], folder)
-        return send_from_directory(file_path, filename)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 404
-
-
-@app.route("/api/results/<request_id>", methods=["GET"])
-def get_results(request_id):
-    """
-    Lấy danh sách tất cả files của một request
-    """
-    try:
-        request_folder = os.path.join(app.config["OUTPUT_FOLDER"], request_id)
-
-        if not os.path.exists(request_folder):
-            return jsonify({"error": "Request ID not found"}), 404
-
-        files = os.listdir(request_folder)
-        file_urls = {
-            filename: generate_file_url(filename, request_id) for filename in files
-        }
-
-        return jsonify({"request_id": request_id, "files": file_urls}), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/")
-def index():
-    """
-    API documentation page
-    """
-    docs = """
-    <h1>Tennis Analysis API</h1>
-    <h2>Endpoints:</h2>
+    <h3>⚠️ Important Notes:</h3>
     <ul>
-        <li><b>GET /api/health</b> - Health check</li>
-        <li><b>POST /api/analyze</b> - Analyze tennis video
-            <ul>
-                <li>Parameters (form-data):
-                    <ul>
-                        <li>video (file, required): Video file</li>
-                        <li>ball_conf (float, optional): Ball detection confidence (default: 0.7)</li>
-                        <li>person_conf (float, optional): Person detection confidence (default: 0.6)</li>
-                        <li>angle_threshold (float, optional): Angle threshold (default: 50)</li>
-                        <li>intersection_threshold (float, optional): Intersection threshold (default: 100)</li>
-                        <li>court_bounds (string, optional): Court bounds as "x1,y1,x2,y2" (default: "100,100,400,500")</li>
-                    </ul>
-                </li>
-            </ul>
-        </li>
-        <li><b>GET /files/&lt;folder&gt;/&lt;filename&gt;</b> - Serve output files</li>
-        <li><b>GET /api/results/&lt;request_id&gt;</b> - Get all files for a request</li>
+        <li><b>Auto Cleanup:</b> Files (images and videos) are automatically deleted after 24 hours to save disk space</li>
+        <li><b>Download Files:</b> Make sure to download important results within 24 hours</li>
+        <li><b>Cleanup Schedule:</b> Cleanup runs every 1 hour in the background</li>
+        <li><b>Expiration Time:</b> Each response includes an 'expires_at' field showing when files will be deleted</li>
     </ul>
-    <h3>Response Format:</h3>
-    <p>API trả về trực tiếp JSON result, không có wrapper {success: true, data: ...}</p>
     """
     return docs
 
@@ -493,20 +363,21 @@ def index():
 # RUN SERVER
 # =============================================================================
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Khởi động cleanup thread
     cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
     cleanup_thread.start()
     print("[CLEANUP] Background cleanup thread started (runs every 1 hour)")
-    
+    print("[CLEANUP] Files older than 24 hours will be automatically deleted")
+
     # Tăng timeout để xử lý video lớn
     from werkzeug.serving import WSGIRequestHandler
+
     WSGIRequestHandler.protocol_version = "HTTP/1.1"
-    
+
     app.run(
-        host='0.0.0.0',
+        host="0.0.0.0",
         port=5000,
         debug=True,
-        threaded=True  # Enable threading để xử lý nhiều request
+        threaded=True,  # Enable threading để xử lý nhiều request
     )
-```
