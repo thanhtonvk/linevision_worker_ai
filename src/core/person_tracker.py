@@ -13,7 +13,7 @@ class PersonTracker:
     Class để tracking người và phân tích pose trong tennis
     """
     
-    def __init__(self, pose_model_path="yolov8n-pose.pt", person_model_path="yolov8m.pt"):
+    def __init__(self, pose_model_path="src/models/yolov8n-pose.pt", person_model_path="src/models/yolov8m.pt"):
         self.pose_model = YOLO(pose_model_path)
         self.person_model = YOLO(person_model_path)
         self.tracked_persons = {}  # {person_id: person_data}

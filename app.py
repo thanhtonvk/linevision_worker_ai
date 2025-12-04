@@ -89,10 +89,15 @@ def cleanup_old_files():
 def serve_file(folder, filename):
     """
     Serve static files (images and videos)
+    Query parameter: download=true to force download
     """
     try:
+        from flask import request
+
         file_path = os.path.join(app.config["OUTPUT_FOLDER"], folder)
-        return send_from_directory(file_path, filename)
+        # Check if download parameter is set
+        download = request.args.get("download", "false").lower() == "true"
+        return send_from_directory(file_path, filename, as_attachment=download)
     except Exception as e:
         return jsonify({"error": str(e)}), 404
 
@@ -124,6 +129,16 @@ def index():
                         <li>court_bounds (string, optional): Court bounds as "x1,y1,x2,y2" (default: "100,100,400,500")</li>
                     </ul>
                 </li>
+            </ul>
+        </li>
+        <li><b>POST /api/check_var</b> - VAR (Video Assistant Referee) analysis for football videos
+            <ul>
+                <li>Parameters (form-data):
+                    <ul>
+                        <li>video (file, required): Video file</li>
+                    </ul>
+                </li>
+                <li>Returns: JSON with URLs to processed videos (crop, mask) and original video path</li>
             </ul>
         </li>
         <li><b>GET /files/&lt;folder&gt;/&lt;filename&gt;</b> - Serve output files</li>

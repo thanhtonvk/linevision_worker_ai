@@ -9,7 +9,7 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent.parent
 
 # Model paths
-MODEL_DIR = BASE_DIR / "models"
+MODEL_DIR = BASE_DIR / "src/models"
 BALL_MODEL_PATH = str(MODEL_DIR / "ball_best.pt")
 PERSON_MODEL_PATH = str(MODEL_DIR / "yolov8m.pt")
 POSE_MODEL_PATH = str(MODEL_DIR / "yolov8n-pose.pt")
@@ -24,7 +24,7 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # API Configuration
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
-API_PORT = int(os.getenv("API_PORT", "5000"))
+API_PORT = int(os.getenv("API_PORT", "2803"))
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
 # File upload settings

@@ -5,6 +5,7 @@
 from flask import Blueprint, request, jsonify, send_from_directory, url_for
 from werkzeug.utils import secure_filename
 from src.core.tennis_analysis_module import TennisAnalysisModule
+from src.core.var_detector import VarDetector
 from config.settings import settings
 import cv2
 import os
@@ -21,6 +22,11 @@ analyzer = TennisAnalysisModule(
     ball_model_path=settings.ball_model_path,
     person_model_path=settings.person_model_path,
     pose_model_path=settings.pose_model_path,
+)
+
+# Initialize VAR Detector
+var_detector = VarDetector(
+    model_path=settings.ball_model_path, conf=0.8, batch_size=150
 )
 
 
@@ -259,6 +265,103 @@ def get_results(request_id):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@api_bp.route("/api/check_var", methods=["POST"])
+def check_var():
+    """
+    Endpoint để kiểm tra VAR (Video Assistant Referee) cho video bóng đá
+
+    Parameters (form-data):
+        - video: Video file (required)
+
+    Returns:
+        JSON với URLs đến các video đã xử lý (crop, mask) và video gốc
+    """
+    try:
+        # Kiểm tra file có được upload không
+        if "video" not in request.files:
+            return jsonify({"error": "No video file provided"}), 400
+
+        file = request.files["video"]
+
+        if file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
+
+        if not allowed_file(file.filename):
+            return (
+                jsonify(
+                    {
+                        "error": f"Invalid file type. Allowed: {settings.allowed_extensions}"
+                    }
+                ),
+                400,
+            )
+
+        # Lưu video upload
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4().hex}_{filename}"
+        video_path = os.path.join(settings.upload_folder, unique_filename)
+        file.save(video_path)
+
+        # Tạo thư mục output riêng cho request này
+        request_id = uuid.uuid4().hex
+        request_output_folder = os.path.join(settings.output_folder, request_id)
+        os.makedirs(request_output_folder, exist_ok=True)
+
+        # Phân tích video với VAR Detector
+        results = var_detector.detect_video(video_path)
+
+        # Copy các video kết quả vào output folder và tạo URLs
+        crop_filename = f"var_crop_{request_id}.mp4"
+        mask_filename = f"var_mask_{request_id}.mp4"
+
+        crop_output_path = os.path.join(request_output_folder, crop_filename)
+        mask_output_path = os.path.join(request_output_folder, mask_filename)
+
+        # Copy files từ thư mục tạm sang output folder
+        if os.path.exists(results["crop"]):
+            shutil.copy2(results["crop"], crop_output_path)
+            os.remove(results["crop"])  # Xóa file tạm
+
+        if os.path.exists(results["mask"]):
+            shutil.copy2(results["mask"], mask_output_path)
+            os.remove(results["mask"])  # Xóa file tạm
+
+        # Tạo URLs cho view và download
+        crop_view_url = generate_file_url(crop_filename, request_id)
+        mask_view_url = generate_file_url(mask_filename, request_id)
+
+        # Tạo download URLs (thêm parameter download=true)
+        crop_download_url = f"{crop_view_url}?download=true"
+        mask_download_url = f"{mask_view_url}?download=true"
+
+        # Tạo response
+        result = {
+            "request_id": request_id,
+            "timestamp": datetime.now().isoformat(),
+            "expires_at": (
+                datetime.now() + timedelta(hours=settings.cleanup_hours)
+            ).isoformat(),
+            "videos": {
+                "crop": {
+                    "view_url": crop_view_url,
+                    "download_url": crop_download_url,
+                    "filename": crop_filename,
+                },
+                "mask": {
+                    "view_url": mask_view_url,
+                    "download_url": mask_download_url,
+                    "filename": mask_filename,
+                },
+            },
+            "original_video": results["origin"],
+        }
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 
 def create_api_blueprint():
