@@ -38,10 +38,6 @@ env/
 # Application specific
 uploads/
 outputs/
-*.pt
-*.pth
-*.onnx
-
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
