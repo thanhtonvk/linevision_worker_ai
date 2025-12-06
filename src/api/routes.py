@@ -13,6 +13,8 @@ import uuid
 from datetime import datetime, timedelta
 import traceback
 import shutil
+import threading
+import time
 
 # Create Blueprint
 api_bp = Blueprint("api", __name__)
@@ -33,6 +35,32 @@ var_detector = VarDetector(
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
+
+
+def schedule_video_deletion(video_path, delay_hours=3):
+    """
+    Lên lịch xóa video sau một khoảng thời gian nhất định
+
+    Args:
+        video_path: Đường dẫn đến video cần xóa
+        delay_hours: Số giờ chờ trước khi xóa (mặc định: 3)
+    """
+
+    def delete_video():
+        try:
+            time.sleep(delay_hours * 3600)  # Chuyển giờ sang giây
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                print(f"[CLEANUP] Deleted video after {delay_hours}h: {video_path}")
+            else:
+                print(f"[CLEANUP] Video already deleted: {video_path}")
+        except Exception as e:
+            print(f"[CLEANUP ERROR] Failed to delete {video_path}: {e}")
+
+    # Tạo thread daemon để xóa video
+    deletion_thread = threading.Thread(target=delete_video, daemon=True)
+    deletion_thread.start()
+    print(f"[CLEANUP] Scheduled deletion for {video_path} in {delay_hours} hours")
 
 
 def allowed_file(filename):
@@ -238,10 +266,25 @@ def analyze_video():
                 video_filename, request_id
             )
 
+        # Xóa video upload ngay sau khi xử lý xong
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                print(f"[CLEANUP] Deleted uploaded video immediately: {video_path}")
+        except Exception as cleanup_error:
+            print(f"[CLEANUP ERROR] Failed to delete {video_path}: {cleanup_error}")
+
         # Trả về trực tiếp result JSON
         return jsonify(result), 200
 
     except Exception as e:
+        # Nếu có lỗi, vẫn cố gắng xóa video đã upload
+        try:
+            if "video_path" in locals() and os.path.exists(video_path):
+                os.remove(video_path)
+                print(f"[CLEANUP] Deleted uploaded video after error: {video_path}")
+        except:
+            pass
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 
@@ -358,9 +401,19 @@ def check_var():
             "original_video": results["origin"],
         }
 
+        # Lên lịch xóa video sau 3 giờ
+        schedule_video_deletion(video_path, delay_hours=3)
+
         return jsonify(result), 200
 
     except Exception as e:
+        # Nếu có lỗi, vẫn cố gắng xóa video đã upload ngay lập tức
+        try:
+            if "video_path" in locals() and os.path.exists(video_path):
+                os.remove(video_path)
+                print(f"[CLEANUP] Deleted uploaded video after error: {video_path}")
+        except:
+            pass
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 
