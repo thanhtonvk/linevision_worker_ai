@@ -99,12 +99,14 @@ class VarDetector:
     def read_video(self, video_path):
         cap = cv2.VideoCapture(video_path)
         frames = []
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frames.append(frame)
-        cap.release()
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.append(frame)
+        finally:
+            cap.release()
         return frames
 
     def batch_frames(self, frames):
@@ -290,40 +292,41 @@ class VarDetector:
         trajectory = []
         frames_since_detect = 0  # Đếm số frame từ lần phát hiện bóng cuối cùng
 
-        for i, frame in enumerate(frames):
-            pos = positions[i] if i < len(positions) else (-1, -1)
-            frame_copy = frame.copy()
+        try:
+            for i, frame in enumerate(frames):
+                pos = positions[i] if i < len(positions) else (-1, -1)
+                frame_copy = frame.copy()
 
-            if pos != (-1, -1):
-                # Có bóng: reset counter và thêm điểm mới
-                x, y = int(pos[0]), int(pos[1])
-                trajectory.append((x, y))
-                frames_since_detect = 0
-
-                # Giới hạn số điểm trên đường bóng
-                if len(trajectory) > max_points:
-                    trajectory.pop(0)
-
-                # Vẽ điểm bóng hiện tại
-                cv2.circle(frame_copy, (x, y), 6, (0, 0, 255), -1)
-            else:
-                # Không phát hiện bóng: tăng counter
-                frames_since_detect += 1
-                # Nếu quá giới hạn clear_after_frames → xoá đường bóng
-                if frames_since_detect >= clear_after_frames:
-                    trajectory.clear()
+                if pos != (-1, -1):
+                    # Có bóng: reset counter và thêm điểm mới
+                    x, y = int(pos[0]), int(pos[1])
+                    trajectory.append((x, y))
                     frames_since_detect = 0
 
-            # Vẽ đường nối giữa các điểm quỹ đạo
-            if len(trajectory) > 1:
-                for j in range(1, len(trajectory)):
-                    cv2.line(
-                        frame_copy, trajectory[j - 1], trajectory[j], (0, 255, 0), 2
-                    )
+                    # Giới hạn số điểm trên đường bóng
+                    if len(trajectory) > max_points:
+                        trajectory.pop(0)
 
-            out.write(frame_copy)
+                    # Vẽ điểm bóng hiện tại
+                    cv2.circle(frame_copy, (x, y), 6, (0, 0, 255), -1)
+                else:
+                    # Không phát hiện bóng: tăng counter
+                    frames_since_detect += 1
+                    # Nếu quá giới hạn clear_after_frames → xoá đường bóng
+                    if frames_since_detect >= clear_after_frames:
+                        trajectory.clear()
+                        frames_since_detect = 0
 
-        out.release()
+                # Vẽ đường nối giữa các điểm quỹ đạo
+                if len(trajectory) > 1:
+                    for j in range(1, len(trajectory)):
+                        cv2.line(
+                            frame_copy, trajectory[j - 1], trajectory[j], (0, 255, 0), 2
+                        )
+
+                out.write(frame_copy)
+        finally:
+            out.release()
         print(
             f"Đã ghi video kết quả với đường bóng (giữ {max_points} điểm, clear sau {clear_after_frames} frame): {output_path}"
         )
@@ -351,64 +354,71 @@ class VarDetector:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
 
-        change_points = set(detect_direction_changes(positions, angle_threshold))
-        fixed_points = []  # [x,y,age]
-        trajectory = []
+        try:
+            change_points = set(detect_direction_changes(positions, angle_threshold))
+            fixed_points = []  # [x,y,age]
+            trajectory = []
 
-        for i, frame in enumerate(frames):
-            pos = positions[i] if i < len(positions) else (-1, -1)
-            frame_copy = frame.copy()
+            for i, frame in enumerate(frames):
+                pos = positions[i] if i < len(positions) else (-1, -1)
+                frame_copy = frame.copy()
 
-            # -------- Vẽ người được detect & track --------
-            if people_tracks and i < len(people_tracks):
-                for person in people_tracks[i]:
-                    x1, y1, x2, y2 = person["bbox"]
-                    color = person["color"]
-                    cv2.rectangle(frame_copy, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(
-                        frame_copy,
-                        f"ID:{person['id']}",
-                        (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        color,
-                        2,
-                    )
+                # -------- Vẽ người được detect & track --------
+                if people_tracks and i < len(people_tracks):
+                    for person in people_tracks[i]:
+                        x1, y1, x2, y2 = person["bbox"]
+                        color = person["color"]
+                        cv2.rectangle(frame_copy, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(
+                            frame_copy,
+                            f"ID:{person['id']}",
+                            (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            color,
+                            2,
+                        )
 
-            # -------- Vẽ bóng & quỹ đạo như code cũ --------
-            for fp in fixed_points:  # tăng tuổi
-                fp[2] += 1
-            fixed_points = [fp for fp in fixed_points if fp[2] <= change_point_lifespan]
+                # -------- Vẽ bóng & quỹ đạo như code cũ --------
+                for fp in fixed_points:  # tăng tuổi
+                    fp[2] += 1
+                fixed_points = [
+                    fp for fp in fixed_points if fp[2] <= change_point_lifespan
+                ]
 
-            if pos != (-1, -1):
-                x, y = int(pos[0]), int(pos[1])
-                if i in change_points:
-                    fixed_points.append([x, y, 0])
-                else:
-                    trajectory.append((x, y))
-                    if len(trajectory) > max_traj_len:
-                        trajectory.pop(0)
+                if pos != (-1, -1):
+                    x, y = int(pos[0]), int(pos[1])
+                    if i in change_points:
+                        fixed_points.append([x, y, 0])
+                    else:
+                        trajectory.append((x, y))
+                        if len(trajectory) > max_traj_len:
+                            trajectory.pop(0)
 
-                cv2.circle(frame_copy, (x, y), 8, (255, 255, 255), -1)
-                cv2.circle(frame_copy, (x, y), 6, (0, 0, 255), -1)
+                    cv2.circle(frame_copy, (x, y), 8, (255, 255, 255), -1)
+                    cv2.circle(frame_copy, (x, y), 6, (0, 0, 255), -1)
 
-            for fx, fy, age in fixed_points:
-                fade = max(0.3, 1 - age / change_point_lifespan)
-                color = (0, int(255 * fade), int(255 * fade))
-                cv2.circle(frame_copy, (int(fx), int(fy)), 12, color, 2)
+                for fx, fy, age in fixed_points:
+                    fade = max(0.3, 1 - age / change_point_lifespan)
+                    color = (0, int(255 * fade), int(255 * fade))
+                    cv2.circle(frame_copy, (int(fx), int(fy)), 12, color, 2)
 
-            if len(trajectory) > 1:
-                for j in range(1, len(trajectory)):
-                    alpha = j / len(trajectory)
-                    color = (0, int(255 * alpha), 0)
-                    thickness = max(1, int(3 * alpha))
-                    cv2.line(
-                        frame_copy, trajectory[j - 1], trajectory[j], color, thickness
-                    )
+                if len(trajectory) > 1:
+                    for j in range(1, len(trajectory)):
+                        alpha = j / len(trajectory)
+                        color = (0, int(255 * alpha), 0)
+                        thickness = max(1, int(3 * alpha))
+                        cv2.line(
+                            frame_copy,
+                            trajectory[j - 1],
+                            trajectory[j],
+                            color,
+                            thickness,
+                        )
 
-            out.write(frame_copy)
-
-        out.release()
+                out.write(frame_copy)
+        finally:
+            out.release()
         print(f"Đã ghi video đánh dấu đổi hướng: {output_path}")
 
     def save_cropped_ball_video(
@@ -454,14 +464,17 @@ class VarDetector:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         out = cv2.VideoWriter(output_path, fourcc, fps, (cw, ch))
 
-        for crop in cropped_frames:
-            crop_resized = cv2.resize(crop, (cw, ch))
-            out.write(crop_resized)
-
-        out.release()
+        try:
+            for crop in cropped_frames:
+                crop_resized = cv2.resize(crop, (cw, ch))
+                out.write(crop_resized)
+        finally:
+            out.release()
         print(f"Đã ghi video crop bóng: {output_path}")
 
-    def detect_video(self, video_path: str):
+    def detect_video(self, video_path: str, output_folder: str = "output"):
+        import os
+
         # Đọc và xử lý dữ liệu
         frames = self.read_video(video_path)
         positions = self.detect_positions(frames)
@@ -472,25 +485,41 @@ class VarDetector:
 
         # Tạo tên file duy nhất bằng uuid4
         uid = uuid.uuid4().hex
-        cropped_path = f"output/output_cropped_{uid}.mp4"
-        masked_path = f"output/output_mask_{uid}.mp4"
-        save_cropped_path = f"output/save_output_cropped_{uid}.mp4"
-        save_masked_path = f"output/save_output_mask_{uid}.mp4"
+
+        # Sử dụng output_folder được truyền vào
+        os.makedirs(output_folder, exist_ok=True)
+
+        cropped_path = os.path.join(output_folder, f"output_cropped_{uid}.mp4")
+        masked_path = os.path.join(output_folder, f"output_mask_{uid}.mp4")
 
         # Lưu video tạm
-        self.save_cropped_ball_video(
-            frames, final_positions, cropped_path, crop_size=100, fps=30
-        )
-        self.save_video_with_direction_changes(
-            frames=frames,
-            positions=final_positions,
-            output_path=masked_path,
-            fps=30,
-            angle_threshold=45,
-            max_traj_len=15,
-            change_point_lifespan=60,
-            people_tracks=people_tracks,
-        )
+        try:
+            self.save_cropped_ball_video(
+                frames, final_positions, cropped_path, crop_size=100, fps=30
+            )
+            self.save_video_with_direction_changes(
+                frames=frames,
+                positions=final_positions,
+                output_path=masked_path,
+                fps=30,
+                angle_threshold=45,
+                max_traj_len=15,
+                change_point_lifespan=60,
+                people_tracks=people_tracks,
+            )
+        except Exception as e:
+            # Cleanup on failure
+            if os.path.exists(cropped_path):
+                try:
+                    os.remove(cropped_path)
+                except:
+                    pass
+            if os.path.exists(masked_path):
+                try:
+                    os.remove(masked_path)
+                except:
+                    pass
+            raise e
 
         return {
             "crop": cropped_path,

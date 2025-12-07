@@ -27,9 +27,7 @@ analyzer = TennisAnalysisModule(
 )
 
 # Initialize VAR Detector
-var_detector = VarDetector(
-    model_path=settings.ball_model_path, conf=0.8, batch_size=32
-)
+var_detector = VarDetector(model_path=settings.ball_model_path, conf=0.8, batch_size=32)
 
 
 # =============================================================================
@@ -353,7 +351,9 @@ def check_var():
         os.makedirs(request_output_folder, exist_ok=True)
 
         # Phân tích video với VAR Detector
-        results = var_detector.detect_video(video_path)
+        results = var_detector.detect_video(
+            video_path, output_folder=request_output_folder
+        )
 
         # Copy các video kết quả vào output folder và tạo URLs
         crop_filename = f"var_crop_{request_id}.mp4"

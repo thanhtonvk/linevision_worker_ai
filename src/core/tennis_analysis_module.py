@@ -71,19 +71,20 @@ class TennisAnalysisModule:
         # 2. Process video
         frames = []
         print("Đang đọc video...")
-        frame_count = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+        try:
+            frame_count = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-            frames.append(frame)
-            frame_count += 1
+                frames.append(frame)
+                frame_count += 1
 
-            if frame_count % 100 == 0:
-                print(f"Đã đọc {frame_count}/{total_frames} frames...")
-
-        cap.release()
+                if frame_count % 100 == 0:
+                    print(f"Đã đọc {frame_count}/{total_frames} frames...")
+        finally:
+            cap.release()
         print(f"✅ Đã đọc xong {len(frames)} frames")
 
         # 3. Detect ball
@@ -657,148 +658,158 @@ class TennisAnalysisModule:
             (0, 255, 255),  # Yellow
         ]
 
-        for frame_idx, frame in enumerate(frames):
-            vis_frame = frame.copy()
+        # Creates video writer
+        try:
+            for frame_idx, frame in enumerate(frames):
+                vis_frame = frame.copy()
 
-            # Vẽ thông tin thống kê ở góc trên
-            stats_text = [
-                f"Rally Ratio: {match_statistics['rally_ratio']:.2%}",
-                f"In Court: {match_statistics['in_court_ratio']:.2%}",
-                f"Out Court: {match_statistics['out_court_ratio']:.2%}",
-            ]
+                # Vẽ thông tin thống kê ở góc trên
+                stats_text = [
+                    f"Rally Ratio: {match_statistics['rally_ratio']:.2%}",
+                    f"In Court: {match_statistics['in_court_ratio']:.2%}",
+                    f"Out Court: {match_statistics['out_court_ratio']:.2%}",
+                ]
 
-            y_offset = 30
-            for i, text in enumerate(stats_text):
+                y_offset = 30
+                for i, text in enumerate(stats_text):
+                    cv2.putText(
+                        vis_frame,
+                        text,
+                        (10, y_offset + i * 25),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 255, 255),
+                        2,
+                    )
+
+                # Vẽ bóng
+                if frame_idx < len(ball_positions) and ball_positions[frame_idx] != (
+                    -1,
+                    -1,
+                ):
+                    x, y = int(ball_positions[frame_idx][0]), int(
+                        ball_positions[frame_idx][1]
+                    )
+
+                    # Chọn màu theo loại thay đổi hướng
+                    if frame_idx < len(direction_flags):
+                        if direction_flags[frame_idx] == 1:  # Bóng chạm đất
+                            color = (0, 0, 255)  # Đỏ
+                        elif (
+                            direction_flags[frame_idx] == 2
+                        ):  # Bóng được đánh bởi người
+                            color = (0, 255, 0)  # Xanh lá
+                        else:
+                            color = (255, 0, 0)  # Xanh dương
+                    else:
+                        color = (255, 0, 0)
+
+                    cv2.circle(vis_frame, (x, y), 8, color, -1)
+                    cv2.circle(vis_frame, (x, y), 6, (255, 255, 255), 2)
+
+                    # Đánh dấu frame có tốc độ cao nhất
+                    if highest_speed_info["frame"] == frame_idx:
+                        cv2.rectangle(
+                            vis_frame,
+                            (x - 15, y - 15),
+                            (x + 15, y + 15),
+                            (0, 255, 255),
+                            3,
+                        )
+                        cv2.putText(
+                            vis_frame,
+                            "MAX SPEED",
+                            (x + 20, y),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 255),
+                            2,
+                        )
+
+                # Vẽ person detections và pose
+                if frame_idx < len(person_detections):
+                    for person_data in person_detections[frame_idx]:
+                        person_id = person_data["person_id"]
+                        bbox = person_data["person"]["bbox"]
+                        pose = person_data["pose"]
+
+                        # Color for this person
+                        color = person_colors[person_id % len(person_colors)]
+
+                        # Draw bounding box
+                        x1, y1, x2, y2 = bbox
+                        cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
+
+                        # Tìm thứ hạng của người chơi này
+                        player_rank = -1
+                        for rank, player in enumerate(best_players, 1):
+                            if player["player_id"] == person_id:
+                                player_rank = rank
+                                break
+
+                        label = f"Player {person_id}"
+                        if player_rank > 0:
+                            label += f" (Rank #{player_rank})"
+
+                        cv2.putText(
+                            vis_frame,
+                            label,
+                            (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.6,
+                            color,
+                            2,
+                        )
+
+                        # Draw pose keypoints
+                        if pose is not None:
+                            keypoints = pose["keypoints"]
+                            conf = pose["conf"]
+
+                            # Draw keypoints
+                            for i, (x, y) in enumerate(keypoints):
+                                if conf[i] > 0.5:  # Only draw confident keypoints
+                                    cv2.circle(
+                                        vis_frame, (int(x), int(y)), 3, color, -1
+                                    )
+
+                            # Draw skeleton
+                            for connection in skeleton:
+                                pt1_idx, pt2_idx = connection
+                                if (
+                                    pt1_idx < len(keypoints)
+                                    and pt2_idx < len(keypoints)
+                                    and conf[pt1_idx] > 0.5
+                                    and conf[pt2_idx] > 0.5
+                                ):
+
+                                    pt1 = (
+                                        int(keypoints[pt1_idx][0]),
+                                        int(keypoints[pt1_idx][1]),
+                                    )
+                                    pt2 = (
+                                        int(keypoints[pt2_idx][0]),
+                                        int(keypoints[pt2_idx][1]),
+                                    )
+                                    cv2.line(vis_frame, pt1, pt2, color, 2)
+
+                # Add frame info
                 cv2.putText(
                     vis_frame,
-                    text,
-                    (10, y_offset + i * 25),
+                    f"Frame: {frame_idx}",
+                    (width - 150, 30),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
+                    0.7,
                     (255, 255, 255),
                     2,
                 )
 
-            # Vẽ bóng
-            if frame_idx < len(ball_positions) and ball_positions[frame_idx] != (
-                -1,
-                -1,
-            ):
-                x, y = int(ball_positions[frame_idx][0]), int(
-                    ball_positions[frame_idx][1]
-                )
+                out.write(vis_frame)
 
-                # Chọn màu theo loại thay đổi hướng
-                if frame_idx < len(direction_flags):
-                    if direction_flags[frame_idx] == 1:  # Bóng chạm đất
-                        color = (0, 0, 255)  # Đỏ
-                    elif direction_flags[frame_idx] == 2:  # Bóng được đánh bởi người
-                        color = (0, 255, 0)  # Xanh lá
-                    else:
-                        color = (255, 0, 0)  # Xanh dương
-                else:
-                    color = (255, 0, 0)
-
-                cv2.circle(vis_frame, (x, y), 8, color, -1)
-                cv2.circle(vis_frame, (x, y), 6, (255, 255, 255), 2)
-
-                # Đánh dấu frame có tốc độ cao nhất
-                if highest_speed_info["frame"] == frame_idx:
-                    cv2.rectangle(
-                        vis_frame, (x - 15, y - 15), (x + 15, y + 15), (0, 255, 255), 3
-                    )
-                    cv2.putText(
-                        vis_frame,
-                        "MAX SPEED",
-                        (x + 20, y),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        (0, 255, 255),
-                        2,
-                    )
-
-            # Vẽ person detections và pose
-            if frame_idx < len(person_detections):
-                for person_data in person_detections[frame_idx]:
-                    person_id = person_data["person_id"]
-                    bbox = person_data["person"]["bbox"]
-                    pose = person_data["pose"]
-
-                    # Color for this person
-                    color = person_colors[person_id % len(person_colors)]
-
-                    # Draw bounding box
-                    x1, y1, x2, y2 = bbox
-                    cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
-
-                    # Tìm thứ hạng của người chơi này
-                    player_rank = -1
-                    for rank, player in enumerate(best_players, 1):
-                        if player["player_id"] == person_id:
-                            player_rank = rank
-                            break
-
-                    label = f"Player {person_id}"
-                    if player_rank > 0:
-                        label += f" (Rank #{player_rank})"
-
-                    cv2.putText(
-                        vis_frame,
-                        label,
-                        (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        color,
-                        2,
-                    )
-
-                    # Draw pose keypoints
-                    if pose is not None:
-                        keypoints = pose["keypoints"]
-                        conf = pose["conf"]
-
-                        # Draw keypoints
-                        for i, (x, y) in enumerate(keypoints):
-                            if conf[i] > 0.5:  # Only draw confident keypoints
-                                cv2.circle(vis_frame, (int(x), int(y)), 3, color, -1)
-
-                        # Draw skeleton
-                        for connection in skeleton:
-                            pt1_idx, pt2_idx = connection
-                            if (
-                                pt1_idx < len(keypoints)
-                                and pt2_idx < len(keypoints)
-                                and conf[pt1_idx] > 0.5
-                                and conf[pt2_idx] > 0.5
-                            ):
-
-                                pt1 = (
-                                    int(keypoints[pt1_idx][0]),
-                                    int(keypoints[pt1_idx][1]),
-                                )
-                                pt2 = (
-                                    int(keypoints[pt2_idx][0]),
-                                    int(keypoints[pt2_idx][1]),
-                                )
-                                cv2.line(vis_frame, pt1, pt2, color, 2)
-
-            # Add frame info
-            cv2.putText(
-                vis_frame,
-                f"Frame: {frame_idx}",
-                (width - 150, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                2,
-            )
-
-            out.write(vis_frame)
-
-            if frame_idx % 100 == 0:
-                print(f"Đã xử lý {frame_idx}/{len(frames)} frames...")
-
-        out.release()
+                if frame_idx % 100 == 0:
+                    print(f"Đã xử lý {frame_idx}/{len(frames)} frames...")
+        finally:
+            out.release()
         print(f"✅ Đã tạo video visualization: {output_path}")
 
         return output_path
