@@ -16,7 +16,7 @@ class BallDetector:
     def __init__(self, model_path="src/models/ball_best.pt", person_model_path="src/models/yolov8m.pt"):
         self.model = YOLO(model_path)
         self.person_model = YOLO(person_model_path)
-        self.batch_size = 16
+        self.batch_size = 8
         self.conf = 0.7
         
     def read_video(self, video_path):

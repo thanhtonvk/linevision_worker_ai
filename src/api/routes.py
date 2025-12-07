@@ -28,7 +28,7 @@ analyzer = TennisAnalysisModule(
 
 # Initialize VAR Detector
 var_detector = VarDetector(
-    model_path=settings.ball_model_path, conf=0.8, batch_size=150
+    model_path=settings.ball_model_path, conf=0.8, batch_size=32
 )
 
 

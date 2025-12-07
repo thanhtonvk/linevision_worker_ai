@@ -53,7 +53,7 @@ def detect_direction_changes(positions, angle_threshold=45):
 
 
 class VarDetector:
-    def __init__(self, model_path, conf=0.8, batch_size=150):
+    def __init__(self, model_path, conf=0.8, batch_size=16):
         self.model = YOLO(model_path)
         self.conf = conf
         self.batch_size = batch_size
@@ -503,7 +503,7 @@ if __name__ == "__main__":
     video_path = "crop_video/part_008.mp4"
     model_path = "ball_best.pt"
 
-    detector = BallDetector(model_path, batch_size=60)
+    detector = BallDetector(model_path, batch_size=32)
     import time
 
     # Đo thời gian đọc video
