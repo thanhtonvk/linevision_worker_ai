@@ -53,13 +53,13 @@ def detect_direction_changes(positions, angle_threshold=45):
 
 
 class VarDetector:
-    def __init__(self, model_path, conf=0.8, batch_size=16):
+    def __init__(self, model_path, conf=0.8, batch_size=4):
         self.model = YOLO(model_path)
         self.conf = conf
         self.batch_size = batch_size
         self.person_model = YOLO("yolo12s.pt")
 
-    def detect_segment_track_people(self, frames, batch_size=16):
+    def detect_segment_track_people(self, frames, batch_size=4):
         """
         Detect + track người (classes=[0]) theo batch để tăng tốc.
         - frames: list numpy array BGR.

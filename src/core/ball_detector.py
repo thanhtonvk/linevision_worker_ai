@@ -21,7 +21,7 @@ class BallDetector:
     ):
         self.model = YOLO(model_path)
         self.person_model = YOLO(person_model_path)
-        self.batch_size = 8
+        self.batch_size = 4
         self.conf = 0.7
 
     def read_video(self, video_path):
