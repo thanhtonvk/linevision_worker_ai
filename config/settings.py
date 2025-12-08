@@ -39,8 +39,11 @@ DEFAULT_INTERSECTION_THRESHOLD = 100
 DEFAULT_COURT_BOUNDS = (100, 100, 400, 500)
 
 # Cleanup settings
-CLEANUP_MINUTES = 10  # Delete files older than 10 minutes
-CLEANUP_HOURS = CLEANUP_MINUTES / 60  # Convert to hours for compatibility
+CLEANUP_HOURS = 3  # Delete files older than 3 hours
+
+# Memory optimization settings
+MAX_FRAME_HEIGHT = 720  # Maximum frame height for inference to reduce memory usage
+ENABLE_FRAME_RESIZE = True  # Enable frame resizing before inference
 
 
 class Settings:
@@ -65,6 +68,8 @@ class Settings:
         self.default_intersection_threshold = DEFAULT_INTERSECTION_THRESHOLD
         self.default_court_bounds = DEFAULT_COURT_BOUNDS
         self.cleanup_hours = CLEANUP_HOURS
+        self.max_frame_height = MAX_FRAME_HEIGHT
+        self.enable_frame_resize = ENABLE_FRAME_RESIZE
 
 
 # Global settings instance

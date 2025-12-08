@@ -13,8 +13,11 @@ backlog = 2048
 workers = multiprocessing.cpu_count() * 2 + 1  # Recommended formula
 worker_class = "sync"
 worker_connections = 1000
-timeout = 300  # 5 minutes - tăng timeout cho video processing
+timeout = 3000  # 50 minutes - increased timeout for long video processing
 keepalive = 2
+
+# Use memory-based tmp directory for better performance
+worker_tmp_dir = "/dev/shm" if os.path.exists("/dev/shm") else None
 
 # Logging
 accesslog = "-"  # Log to stdout
@@ -44,8 +47,8 @@ preload_app = True
 max_requests = 1000
 max_requests_jitter = 50
 
-# Graceful timeout
-graceful_timeout = 30
+# Graceful timeout - allow more time for cleanup
+graceful_timeout = 120
 
 # Limit request line size
 limit_request_line = 4094
