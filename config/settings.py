@@ -42,7 +42,7 @@ DEFAULT_COURT_BOUNDS = (100, 100, 400, 500)
 CLEANUP_HOURS = 3  # Delete files older than 3 hours
 
 # Memory optimization settings
-MAX_FRAME_HEIGHT = 720  # Maximum frame height for inference to reduce memory usage
+MAX_FRAME_HEIGHT = 480  # Maximum frame height for inference - reduced for speed
 ENABLE_FRAME_RESIZE = True  # Enable frame resizing before inference
 
 

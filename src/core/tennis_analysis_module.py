@@ -87,6 +87,12 @@ class TennisAnalysisModule:
             cap.release()
         print(f"✅ Đã đọc xong {len(frames)} frames")
 
+        # Giới hạn số frames để xử lý nhanh hơn (chỉ xử lý 50% video)
+        max_frames = len(frames) // 2  # Lấy 1/2 số frames
+        if len(frames) > max_frames:
+            frames = frames[:max_frames]
+            print(f"⚡ Giới hạn xử lý {max_frames} frames (50% video) để tăng tốc")
+
         # 3. Detect ball
         print("Đang detect bóng...")
         ball_positions = self.ball_detector.detect_positions(frames)
