@@ -33,8 +33,8 @@ app.register_blueprint(api_bp)
 
 def cleanup_old_files():
     """
-    Xóa các file và folder cũ hơn 24 giờ trong OUTPUT_FOLDER và UPLOAD_FOLDER
-    Chạy trong background thread
+    Xóa các file và folder cũ hơn 10 phút trong OUTPUT_FOLDER và UPLOAD_FOLDER
+    Chạy trong background thread mỗi 1 phút
     """
     while True:
         try:
@@ -76,8 +76,8 @@ def cleanup_old_files():
         except Exception as e:
             print(f"[CLEANUP ERROR] {e}")
 
-        # Chạy cleanup mỗi 1 giờ
-        time.sleep(3600)
+        # Chạy cleanup mỗi 1 phút để kịp thời xóa file cũ
+        time.sleep(60)
 
 
 # =============================================================================
@@ -148,9 +148,9 @@ def index():
     <p>API trả về trực tiếp JSON result, không có wrapper {success: true, data: ...}</p>
     <h3>⚠️ Important Notes:</h3>
     <ul>
-        <li><b>Auto Cleanup:</b> Files (images and videos) are automatically deleted after 24 hours to save disk space</li>
-        <li><b>Download Files:</b> Make sure to download important results within 24 hours</li>
-        <li><b>Cleanup Schedule:</b> Cleanup runs every 1 hour in the background</li>
+        <li><b>Auto Cleanup:</b> Files (images and videos) are automatically deleted after 10 minutes to save disk space</li>
+        <li><b>Download Files:</b> Make sure to download important results within 10 minutes</li>
+        <li><b>Cleanup Schedule:</b> Cleanup runs every 1 minute in the background</li>
         <li><b>Expiration Time:</b> Each response includes an 'expires_at' field showing when files will be deleted</li>
     </ul>
     """
@@ -165,10 +165,8 @@ if __name__ == "__main__":
     # Khởi động cleanup thread
     cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
     cleanup_thread.start()
-    print(f"[CLEANUP] Background cleanup thread started (runs every 1 hour)")
-    print(
-        f"[CLEANUP] Files older than {settings.cleanup_hours} hours will be automatically deleted"
-    )
+    print(f"[CLEANUP] Background cleanup thread started (runs every 1 minute)")
+    print(f"[CLEANUP] Files older than 10 minutes will be automatically deleted")
 
     # Tăng timeout để xử lý video lớn
     from werkzeug.serving import WSGIRequestHandler
