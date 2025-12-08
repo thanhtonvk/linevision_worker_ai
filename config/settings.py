@@ -39,7 +39,8 @@ DEFAULT_INTERSECTION_THRESHOLD = 100
 DEFAULT_COURT_BOUNDS = (100, 100, 400, 500)
 
 # Cleanup settings
-CLEANUP_HOURS = 24  # Delete files older than 24 hours
+CLEANUP_MINUTES = 10  # Delete files older than 10 minutes
+CLEANUP_HOURS = CLEANUP_MINUTES / 60  # Convert to hours for compatibility
 
 
 class Settings:

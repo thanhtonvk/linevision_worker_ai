@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import shutil
 import threading
 import time
+import subprocess
 
 app = Flask(__name__)
 
@@ -78,6 +79,35 @@ def cleanup_old_files():
 
         # Chạy cleanup mỗi 1 phút để kịp thời xóa file cũ
         time.sleep(60)
+
+
+def clear_system_trash():
+    """
+    Xóa thùng rác hệ thống (macOS) mỗi 10 phút
+    Chạy trong background thread riêng biệt
+    """
+    # Đường dẫn thùng rác macOS
+    trash_path = os.path.expanduser("~/.Trash/*")
+
+    while True:
+        try:
+            # Xóa tất cả file trong thùng rác macOS
+            result = subprocess.run(
+                f"rm -rf {trash_path}", shell=True, capture_output=True, text=True
+            )
+
+            if result.returncode == 0:
+                print(f"[TRASH CLEANUP] Đã dọn sạch thùng rác hệ thống macOS")
+            else:
+                if result.stderr:
+                    print(f"[TRASH CLEANUP ERROR] {result.stderr}")
+
+        except Exception as e:
+            print(f"[TRASH CLEANUP ERROR] {e}")
+
+        # Chạy cleanup thùng rác mỗi 10 phút
+        print(f"[TRASH CLEANUP] Chờ 10 phút để dọn lại...")
+        time.sleep(600)  # 600 giây = 10 phút
 
 
 # =============================================================================
@@ -167,6 +197,14 @@ if __name__ == "__main__":
     cleanup_thread.start()
     print(f"[CLEANUP] Background cleanup thread started (runs every 1 minute)")
     print(f"[CLEANUP] Files older than 10 minutes will be automatically deleted")
+
+    # Khởi động trash cleanup thread
+    trash_cleanup_thread = threading.Thread(target=clear_system_trash, daemon=True)
+    trash_cleanup_thread.start()
+    print(
+        f"[TRASH CLEANUP] System trash cleanup thread started (runs every 10 minutes)"
+    )
+    print(f"[TRASH CLEANUP] macOS Trash will be cleared every 10 minutes")
 
     # Tăng timeout để xử lý video lớn
     from werkzeug.serving import WSGIRequestHandler
