@@ -113,7 +113,10 @@ class TennisAnalysisModule:
         print("Đang tracking người và phân tích pose...")
         person_detections, pose_detections = (
             self.person_tracker.detect_and_track_persons(
-                frames, ball_positions, direction_flags
+                frames,
+                ball_positions,
+                direction_flags,
+                cached_person_detections=person_detections_old,  # Use cached detections
             )
         )
 

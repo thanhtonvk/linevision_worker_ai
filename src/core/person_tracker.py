@@ -49,8 +49,17 @@ class PersonTracker:
         )
         return resized, scale
 
-    def detect_and_track_persons(self, frames, ball_positions, direction_flags):
-        """Detect và track người qua các frame"""
+    def detect_and_track_persons(
+        self, frames, ball_positions, direction_flags, cached_person_detections=None
+    ):
+        """Detect và track người qua các frame
+
+        Args:
+            frames: List of video frames
+            ball_positions: Ball positions for each frame
+            direction_flags: Direction change flags
+            cached_person_detections: Optional pre-computed person detections from ball_detector
+        """
         print("Đang detect và track người...")
         if self.enable_frame_resize:
             print(f"Frame resizing enabled: max height = {self.max_frame_height}px")
@@ -58,32 +67,51 @@ class PersonTracker:
         person_detections = []
         pose_detections = []
 
+        # Check if we can use cached person detections
+        use_cached = cached_person_detections is not None and len(
+            cached_person_detections
+        ) == len(frames)
+        if use_cached:
+            print("⚡ Using cached person detections (optimization enabled)")
+
         for frame_idx, frame in enumerate(frames):
             # Resize frame to reduce memory usage
             resized_frame, scale = self._resize_frame(frame)
             original_height, original_width = frame.shape[:2]
-            # Detect người on resized frame
-            person_results = self.person_model.predict(
-                resized_frame, verbose=False, conf=0.6
-            )
-            frame_persons = []
 
-            if person_results[0].boxes is not None:
-                for box in person_results[0].boxes:
-                    if int(box.cls) == 0:  # person class
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        conf = box.conf.cpu().numpy()[0]
-                        # Scale bounding box back to original dimensions
-                        if scale != 1.0:
-                            x1, y1, x2, y2 = (
-                                x1 / scale,
-                                y1 / scale,
-                                x2 / scale,
-                                y2 / scale,
+            # Detect người - use cached if available, otherwise run inference
+            frame_persons = []
+            if use_cached:
+                # Use cached detections from ball_detector
+                cached_persons = cached_person_detections[frame_idx]
+                for person in cached_persons:
+                    # cached format: {'bbox': (x1, y1, x2, y2), 'conf': conf}
+                    frame_persons.append(person)
+            else:
+                # Run person detection (original code)
+                person_results = self.person_model.predict(
+                    resized_frame, verbose=False, conf=0.6
+                )
+
+                if person_results[0].boxes is not None:
+                    for box in person_results[0].boxes:
+                        if int(box.cls) == 0:  # person class
+                            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                            conf = box.conf.cpu().numpy()[0]
+                            # Scale bounding box back to original dimensions
+                            if scale != 1.0:
+                                x1, y1, x2, y2 = (
+                                    x1 / scale,
+                                    y1 / scale,
+                                    x2 / scale,
+                                    y2 / scale,
+                                )
+                            frame_persons.append(
+                                {
+                                    "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                                    "conf": conf,
+                                }
                             )
-                        frame_persons.append(
-                            {"bbox": (int(x1), int(y1), int(x2), int(y2)), "conf": conf}
-                        )
 
             # Detect pose on resized frame
             pose_results = self.pose_model.predict(
