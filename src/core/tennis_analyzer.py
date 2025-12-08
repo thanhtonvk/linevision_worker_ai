@@ -17,7 +17,7 @@ class TennisAnalyzer:
     def __init__(
         self,
         ball_model_path="src/models/ball_best.pt",
-        person_model_path="src/models/yolov8m.pt",
+        person_model_path="src/models/yolov8n.pt",  # Changed to nano
         pose_model_path="src/models/yolov8n-pose.pt",
     ):
         self.ball_detector = BallDetector(ball_model_path, person_model_path)

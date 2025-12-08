@@ -17,7 +17,7 @@ class BallDetector:
     def __init__(
         self,
         model_path="src/models/ball_best.pt",
-        person_model_path="src/models/yolov8m.pt",
+        person_model_path="src/models/yolov8n.pt",  # Changed to nano
     ):
         self.model = YOLO(model_path)
         self.person_model = YOLO(person_model_path)

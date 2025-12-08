@@ -11,7 +11,7 @@ BASE_DIR = Path(__file__).parent.parent
 # Model paths
 MODEL_DIR = BASE_DIR / "src/models"
 BALL_MODEL_PATH = str(MODEL_DIR / "ball_best.pt")
-PERSON_MODEL_PATH = str(MODEL_DIR / "yolov8m.pt")
+PERSON_MODEL_PATH = str(MODEL_DIR / "yolov8n.pt")  # Changed to nano for lighter model
 POSE_MODEL_PATH = str(MODEL_DIR / "yolov8n-pose.pt")
 
 # Upload and output folders

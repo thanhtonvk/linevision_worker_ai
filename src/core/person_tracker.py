@@ -19,7 +19,7 @@ class PersonTracker:
     def __init__(
         self,
         pose_model_path="src/models/yolov8n-pose.pt",
-        person_model_path="src/models/yolov8m.pt",
+        person_model_path="src/models/yolov8n.pt",  # Changed to nano
     ):
         self.pose_model = YOLO(pose_model_path)
         self.person_model = YOLO(person_model_path)
