@@ -535,9 +535,6 @@ class VarDetector:
                 # people_tracks=people_tracks,
             )
             del positions, corrected, smoothed, final_positions, frames
-            gc.collect()
-            torch.cuda.empty_cache()
-
             return {
                 "crop": cropped_path,
                 "mask": masked_path,
