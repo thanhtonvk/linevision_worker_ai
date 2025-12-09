@@ -49,6 +49,7 @@ class VarDetector:
         self.conf = conf
         self.batch_size = batch_size
         self.person_model = YOLO("yolo12s.pt")
+        print("init model")
 
     # --- Bước 1: Đọc video và chia batch ---
     def read_video(self, video_path):
