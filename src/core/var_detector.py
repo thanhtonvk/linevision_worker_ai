@@ -509,7 +509,7 @@ class VarDetector:
             corrected = self.correct_positions(positions)
             smoothed = self.smooth_positions(corrected, threshold_factor=2.5)
             final_positions = self.interpolate_positions(smoothed, step=5)
-            people_tracks = self.detect_segment_track_people(frames)
+            # people_tracks = self.detect_segment_track_people(frames)
 
             # Tạo tên file duy nhất bằng uuid4
             uid = uuid.uuid4().hex
@@ -532,7 +532,7 @@ class VarDetector:
                 angle_threshold=45,
                 max_traj_len=15,
                 change_point_lifespan=60,
-                people_tracks=people_tracks,
+                # people_tracks=people_tracks,
             )
 
             return {
