@@ -43,6 +43,17 @@ def detect_direction_changes(positions, angle_threshold=45):
     return change_points
 
 
+def gpu_memory_full(threshold_ratio: float = 0.85):
+    """
+    Kiểm tra nếu GPU memory > 85% (hoặc tùy chọn).
+    """
+    if not torch.cuda.is_available():
+        return False
+    mem_alloc = torch.cuda.memory_allocated()
+    mem_total = torch.cuda.get_device_properties(0).total_memory
+    return mem_alloc / mem_total > threshold_ratio
+
+
 class VarDetector:
     def __init__(self, model_path, conf=0.8, batch_size=4):
         self.model = YOLO(model_path)
@@ -50,6 +61,21 @@ class VarDetector:
         self.batch_size = batch_size
         self.person_model = YOLO("yolo12s.pt")
         print("init model")
+
+    def reset_model(self):
+        """Clear GPU + reload YOLO model."""
+        print("⚠️ GPU RAM cao, reload YOLO model...")
+
+        try:
+            del self.model
+        except:
+            pass
+
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        self.model = YOLO(self.model_path)
+        print("✅ Model loaded lại thành công.")
 
     # --- Bước 1: Đọc video và chia batch ---
     def read_video(self, video_path):
@@ -77,6 +103,8 @@ class VarDetector:
         positions = []
         with torch.no_grad():
             for batch in batches:
+                if gpu_memory_full():
+                    self.reset_model()
                 results = self.model.predict(
                     batch,
                     batch=self.batch_size,
