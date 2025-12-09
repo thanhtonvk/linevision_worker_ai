@@ -43,7 +43,7 @@ def detect_direction_changes(positions, angle_threshold=45):
     return change_points
 
 
-def gpu_memory_full(threshold_ratio: float = 0.85):
+def gpu_memory_full(threshold_ratio: float = 0.4):
     """
     Kiểm tra nếu GPU memory > 85% (hoặc tùy chọn).
     """
