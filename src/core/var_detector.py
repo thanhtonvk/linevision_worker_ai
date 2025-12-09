@@ -78,7 +78,7 @@ class VarDetector:
 
                 # TRACK (persist=True keeps tracking IDs)
                 results = self.person_model.track(
-                    batch, persist=True, classes=[0], verbose=False, conf=0.5  # human
+                    batch, persist=False, classes=[0], verbose=False, conf=0.5  # human
                 )
 
                 # Process batch results
