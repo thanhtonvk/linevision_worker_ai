@@ -50,70 +50,6 @@ class VarDetector:
         self.batch_size = batch_size
         self.person_model = YOLO("yolo12s.pt")
 
-    def detect_segment_track_people(self, frames, batch_size=4):
-        """
-        Detect + track người (classes=[0]) theo batch để tăng tốc và tránh GPU leak.
-        """
-
-        # Reset tracker correctly to prevent memory build-up
-        if hasattr(self.person_model, "tracker"):
-            self.person_model.tracker = None
-        if hasattr(self.person_model, "predictor"):
-            self.person_model.predictor = None
-
-        id_colors = {}
-
-        def get_color(tid):
-            if tid not in id_colors:
-                id_colors[tid] = tuple(np.random.randint(0, 255, 3).tolist())
-            return id_colors[tid]
-
-        all_tracks = []
-
-        # Avoid creating computation graph (VERY IMPORTANT)
-        with torch.no_grad():
-            for i in range(0, len(frames), batch_size):
-
-                batch = frames[i : i + batch_size]
-
-                # TRACK (persist=True keeps tracking IDs)
-                results = self.person_model.track(
-                    batch, persist=False, classes=[0], verbose=False, conf=0.5  # human
-                )
-
-                # Process batch results
-                for res in results:
-                    frame_tracks = []
-                    if res.boxes is not None and len(res.boxes) > 0:
-
-                        boxes = res.boxes.xyxy.detach().cpu().numpy()
-                        ids = (
-                            res.boxes.id.detach().cpu().numpy()
-                            if res.boxes.id is not None
-                            else []
-                        )
-                        confs = res.boxes.conf.detach().cpu().numpy()
-
-                        for box, tid, conf in zip(boxes, ids, confs):
-                            x1, y1, x2, y2 = map(int, box)
-                            frame_tracks.append(
-                                {
-                                    "id": int(tid),
-                                    "bbox": [x1, y1, x2, y2],
-                                    "confidence": float(conf),
-                                    "color": get_color(int(tid)),
-                                }
-                            )
-
-                    all_tracks.append(frame_tracks)
-
-                # CLEAN GPU MEMORY after each batch
-                del results
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-
-        return all_tracks
-
     # --- Bước 1: Đọc video và chia batch ---
     def read_video(self, video_path):
         cap = cv2.VideoCapture(video_path)
@@ -141,7 +77,11 @@ class VarDetector:
         with torch.no_grad():
             for batch in batches:
                 results = self.model.predict(
-                    batch, batch=self.batch_size, verbose=False, conf=self.conf
+                    batch,
+                    batch=self.batch_size,
+                    verbose=False,
+                    conf=self.conf,
+                    stream=True,
                 )
                 for res in results:
                     if res.boxes is not None and len(res.boxes) > 0:
