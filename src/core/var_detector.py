@@ -2,19 +2,10 @@ import cv2
 import math
 from itertools import combinations
 from ultralytics import YOLO
-import math
-import cv2
 import numpy as np
 import uuid
-
-# Tạo màu cố định cho ID
-id_colors = {}
-
-
-def get_color_for_id(track_id):
-    if track_id not in id_colors:
-        id_colors[track_id] = tuple(np.random.randint(0, 255, 3).tolist())
-    return id_colors[track_id]
+import torch
+import gc
 
 
 def detect_direction_changes(positions, angle_threshold=45):
@@ -65,6 +56,18 @@ class VarDetector:
         - frames: list numpy array BGR.
         - batch_size: số frame mỗi lần suy luận.
         """
+        # Reset tracker state for new video processing to clear previous history
+        if hasattr(self.person_model, "predictor"):
+            self.person_model.predictor = None
+
+        # Local color cache for this video session
+        id_colors = {}
+
+        def get_color(tid):
+            if tid not in id_colors:
+                id_colors[tid] = tuple(np.random.randint(0, 255, 3).tolist())
+            return id_colors[tid]
+
         all_tracks = []
         for i in range(0, len(frames), batch_size):
             batch = frames[i : i + batch_size]
@@ -83,7 +86,7 @@ class VarDetector:
 
                     for box, tid, conf in zip(boxes, ids, confs):
                         x1, y1, x2, y2 = map(int, box)
-                        color = get_color_for_id(int(tid))
+                        color = get_color(int(tid))
                         frame_tracks.append(
                             {
                                 "id": int(tid),
@@ -475,25 +478,29 @@ class VarDetector:
     def detect_video(self, video_path: str, output_folder: str = "output"):
         import os
 
-        # Đọc và xử lý dữ liệu
-        frames = self.read_video(video_path)
-        positions = self.detect_positions(frames)
-        corrected = self.correct_positions(positions)
-        smoothed = self.smooth_positions(corrected, threshold_factor=2.5)
-        final_positions = self.interpolate_positions(smoothed, step=5)
-        people_tracks = self.detect_segment_track_people(frames)
+        frames = []
+        cropped_path = None
+        masked_path = None
 
-        # Tạo tên file duy nhất bằng uuid4
-        uid = uuid.uuid4().hex
-
-        # Sử dụng output_folder được truyền vào
-        os.makedirs(output_folder, exist_ok=True)
-
-        cropped_path = os.path.join(output_folder, f"output_cropped_{uid}.mp4")
-        masked_path = os.path.join(output_folder, f"output_mask_{uid}.mp4")
-
-        # Lưu video tạm
         try:
+            # Đọc và xử lý dữ liệu
+            frames = self.read_video(video_path)
+            positions = self.detect_positions(frames)
+            corrected = self.correct_positions(positions)
+            smoothed = self.smooth_positions(corrected, threshold_factor=2.5)
+            final_positions = self.interpolate_positions(smoothed, step=5)
+            people_tracks = self.detect_segment_track_people(frames)
+
+            # Tạo tên file duy nhất bằng uuid4
+            uid = uuid.uuid4().hex
+
+            # Sử dụng output_folder được truyền vào
+            os.makedirs(output_folder, exist_ok=True)
+
+            cropped_path = os.path.join(output_folder, f"output_cropped_{uid}.mp4")
+            masked_path = os.path.join(output_folder, f"output_mask_{uid}.mp4")
+
+            # Lưu video tạm
             self.save_cropped_ball_video(
                 frames, final_positions, cropped_path, crop_size=100, fps=30
             )
@@ -507,25 +514,34 @@ class VarDetector:
                 change_point_lifespan=60,
                 people_tracks=people_tracks,
             )
+
+            return {
+                "crop": cropped_path,
+                "mask": masked_path,
+                "origin": video_path,
+            }
+
         except Exception as e:
             # Cleanup on failure
-            if os.path.exists(cropped_path):
+            if cropped_path and os.path.exists(cropped_path):
                 try:
                     os.remove(cropped_path)
                 except:
                     pass
-            if os.path.exists(masked_path):
+            if masked_path and os.path.exists(masked_path):
                 try:
                     os.remove(masked_path)
                 except:
                     pass
             raise e
 
-        return {
-            "crop": cropped_path,
-            "mask": masked_path,
-            "origin": video_path,
-        }
+        finally:
+            # Cleanup memory
+            if frames:
+                del frames
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
