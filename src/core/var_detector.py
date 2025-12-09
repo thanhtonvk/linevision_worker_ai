@@ -90,8 +90,9 @@ class VarDetector:
                         positions.append((x, y))
                     else:
                         positions.append((-1, -1))
-        del results
-        torch.cuda.empty_cache()
+                del results
+                torch.cuda.empty_cache()
+                gc.collect()
         torch.cuda.synchronize()
         return positions
 
