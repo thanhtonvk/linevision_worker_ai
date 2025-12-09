@@ -52,15 +52,15 @@ class VarDetector:
 
     def detect_segment_track_people(self, frames, batch_size=4):
         """
-        Detect + track người (classes=[0]) theo batch để tăng tốc.
-        - frames: list numpy array BGR.
-        - batch_size: số frame mỗi lần suy luận.
+        Detect + track người (classes=[0]) theo batch để tăng tốc và tránh GPU leak.
         """
-        # Reset tracker state for new video processing to clear previous history
+
+        # Reset tracker correctly to prevent memory build-up
+        if hasattr(self.person_model, "tracker"):
+            self.person_model.tracker = None
         if hasattr(self.person_model, "predictor"):
             self.person_model.predictor = None
 
-        # Local color cache for this video session
         id_colors = {}
 
         def get_color(tid):
@@ -69,33 +69,49 @@ class VarDetector:
             return id_colors[tid]
 
         all_tracks = []
-        for i in range(0, len(frames), batch_size):
-            batch = frames[i : i + batch_size]
-            # YOLO nhận list frames -> trả về list kết quả tương ứng
-            results = self.person_model.track(
-                batch, persist=True, classes=[0], verbose=False, conf=0.5  # Chỉ người
-            )
 
-            # Lặp qua từng frame trong batch
-            for res in results:
-                frame_tracks = []
-                if res.boxes is not None:
-                    boxes = res.boxes.xyxy.cpu().numpy()
-                    ids = res.boxes.id.cpu().numpy() if res.boxes.id is not None else []
-                    confs = res.boxes.conf.cpu().numpy()
+        # Avoid creating computation graph (VERY IMPORTANT)
+        with torch.no_grad():
+            for i in range(0, len(frames), batch_size):
 
-                    for box, tid, conf in zip(boxes, ids, confs):
-                        x1, y1, x2, y2 = map(int, box)
-                        color = get_color(int(tid))
-                        frame_tracks.append(
-                            {
-                                "id": int(tid),
-                                "bbox": [x1, y1, x2, y2],
-                                "confidence": float(conf),
-                                "color": color,
-                            }
+                batch = frames[i : i + batch_size]
+
+                # TRACK (persist=True keeps tracking IDs)
+                results = self.person_model.track(
+                    batch, persist=True, classes=[0], verbose=False, conf=0.5  # human
+                )
+
+                # Process batch results
+                for res in results:
+                    frame_tracks = []
+                    if res.boxes is not None and len(res.boxes) > 0:
+
+                        boxes = res.boxes.xyxy.detach().cpu().numpy()
+                        ids = (
+                            res.boxes.id.detach().cpu().numpy()
+                            if res.boxes.id is not None
+                            else []
                         )
-                all_tracks.append(frame_tracks)
+                        confs = res.boxes.conf.detach().cpu().numpy()
+
+                        for box, tid, conf in zip(boxes, ids, confs):
+                            x1, y1, x2, y2 = map(int, box)
+                            frame_tracks.append(
+                                {
+                                    "id": int(tid),
+                                    "bbox": [x1, y1, x2, y2],
+                                    "confidence": float(conf),
+                                    "color": get_color(int(tid)),
+                                }
+                            )
+
+                    all_tracks.append(frame_tracks)
+
+                # CLEAN GPU MEMORY after each batch
+                del results
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
         return all_tracks
 
     # --- Bước 1: Đọc video và chia batch ---
@@ -122,17 +138,21 @@ class VarDetector:
     def detect_positions(self, frames):
         batches = self.batch_frames(frames)
         positions = []
-        for batch in batches:
-            results = self.model.predict(
-                batch, batch=self.batch_size, verbose=False, conf=self.conf
-            )
-            for res in results:
-                if res.boxes is not None and len(res.boxes) > 0:
-                    best_idx = res.boxes.conf.argmax()
-                    x, y, w, h = res.boxes.xywh[best_idx].cpu().numpy()
-                    positions.append((x, y))
-                else:
-                    positions.append((-1, -1))
+        with torch.no_grad():
+            for batch in batches:
+                results = self.model.predict(
+                    batch, batch=self.batch_size, verbose=False, conf=self.conf
+                )
+                for res in results:
+                    if res.boxes is not None and len(res.boxes) > 0:
+                        best_idx = res.boxes.conf.argmax()
+                        x, y, w, h = res.boxes.xywh[best_idx].cpu().numpy()
+                        positions.append((x, y))
+                    else:
+                        positions.append((-1, -1))
+        del results
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
         return positions
 
     # --- Bước 3: Loại bỏ điểm bất thường trong nhóm ---
