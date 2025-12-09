@@ -51,6 +51,7 @@ def gpu_memory_full(threshold_ratio: float = 0.4):
         return False
     mem_alloc = torch.cuda.memory_allocated()
     mem_total = torch.cuda.get_device_properties(0).total_memory
+    print(f"GPU Memory Usage: {mem_alloc / mem_total * 100:.2f}%")
     return mem_alloc / mem_total > threshold_ratio
 
 
