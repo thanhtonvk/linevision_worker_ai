@@ -7,6 +7,19 @@ import math
 import numpy as np
 from ultralytics import YOLO
 from itertools import combinations
+import gc
+import torch
+
+
+def gpu_memory_full(threshold_ratio: float = 0.85):
+    """
+    Kiểm tra nếu GPU memory > 85% (hoặc tùy chọn).
+    """
+    if not torch.cuda.is_available():
+        return False
+    mem_alloc = torch.cuda.memory_allocated()
+    mem_total = torch.cuda.get_device_properties(0).total_memory
+    return mem_alloc / mem_total > threshold_ratio
 
 
 class BallDetector:
@@ -20,7 +33,7 @@ class BallDetector:
         person_model_path="src/models/yolov8n.pt",  # Changed to nano
     ):
         self.model = YOLO(model_path)
-        self.person_model = YOLO(person_model_path)
+        # self.person_model = YOLO(person_model_path)
         self.batch_size = 2  # Reduced for faster processing
         self.conf = 0.7
 
@@ -38,6 +51,21 @@ class BallDetector:
             cap.release()
         return frames
 
+    def reset_model(self):
+        """Clear GPU + reload YOLO model."""
+        print("⚠️ GPU RAM cao, reload YOLO model...")
+
+        try:
+            del self.model
+        except:
+            pass
+
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        self.model = YOLO(self.model_path).to("cuda")
+        print("✅ Model loaded lại thành công.")
+
     def batch_frames(self, frames):
         """Chia frames thành các batch để xử lý"""
         return [
@@ -50,6 +78,8 @@ class BallDetector:
         batches = self.batch_frames(frames)
         positions = []
         for batch in batches:
+            if gpu_memory_full():
+                self.reset_model()
             results = self.model.predict(
                 batch, batch=self.batch_size, verbose=False, conf=self.conf
             )
