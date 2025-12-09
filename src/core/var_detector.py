@@ -559,9 +559,6 @@ class VarDetector:
             raise e
 
         finally:
-            # Cleanup memory
-            if frames:
-                del frames
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
