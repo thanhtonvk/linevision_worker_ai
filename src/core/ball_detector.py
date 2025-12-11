@@ -74,8 +74,7 @@ class BallDetector:
         ]
 
     def detect_positions(self, frames):
-        """Detect vị trí bóng trong các frames"""
-        batches = self.batch_frames(frames)
+        """Detect vị trí bóng trong các frames (sequential - từng frame một)"""
         positions = []
         for batch in batches:
             if gpu_memory_full():
@@ -197,29 +196,29 @@ class BallDetector:
         return interpolated
 
     def detect_persons(self, frames, person_conf=0.5):
-        """Detect người trong frames"""
-        batches = self.batch_frames(frames)
+        """Detect người trong frames (sequential - từng frame một)"""
         person_detections = []
 
-        for batch in batches:
-            results = self.person_model.predict(
-                batch, batch=self.batch_size, verbose=False, conf=person_conf
-            )
-            for res in results:
-                frame_persons = []
-                if res.boxes is not None and len(res.boxes) > 0:
-                    for box in res.boxes:
-                        if int(box.cls) == 0:  # person class
-                            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                            conf = box.conf.cpu().numpy()[0]
-                            if conf >= person_conf:
-                                frame_persons.append(
-                                    {
-                                        "bbox": (int(x1), int(y1), int(x2), int(y2)),
-                                        "conf": conf,
-                                    }
-                                )
-                person_detections.append(frame_persons)
+        for i, frame in enumerate(frames):
+            results = self.person_model.predict(frame, verbose=False, conf=person_conf)
+            res = results[0]
+            frame_persons = []
+            if res.boxes is not None and len(res.boxes) > 0:
+                for box in res.boxes:
+                    if int(box.cls) == 0:  # person class
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                        conf = box.conf.cpu().numpy()[0]
+                        if conf >= person_conf:
+                            frame_persons.append(
+                                {
+                                    "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                                    "conf": conf,
+                                }
+                            )
+            person_detections.append(frame_persons)
+
+            if (i + 1) % 100 == 0:
+                print(f"Đã detect người {i + 1}/{len(frames)} frames...")
 
         return person_detections
 

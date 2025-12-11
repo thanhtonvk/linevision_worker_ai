@@ -15,19 +15,24 @@ import traceback
 import shutil
 import threading
 import time
+import requests
 
 # Create Blueprint
 api_bp = Blueprint("api", __name__)
 
-# Initialize Tennis Analysis Module
-analyzer = TennisAnalysisModule(
-    ball_model_path=settings.ball_model_path,
-    person_model_path=settings.person_model_path,
-    pose_model_path=settings.pose_model_path,
-)
 
-# Initialize VAR Detector
-var_detector = VarDetector(model_path=settings.ball_model_path, conf=0.8, batch_size=32)
+def create_analyzer():
+    """Tạo instance mới của TennisAnalysisModule cho mỗi request để tránh race condition"""
+    return TennisAnalysisModule(
+        ball_model_path=settings.ball_model_path,
+        person_model_path=settings.person_model_path,
+        pose_model_path=settings.pose_model_path,
+    )
+
+
+def create_var_detector():
+    """Tạo instance mới của VarDetector cho mỗi request để tránh race condition"""
+    return VarDetector(model_path=settings.ball_model_path, conf=0.8, batch_size=32)
 
 
 # =============================================================================
@@ -85,89 +90,67 @@ def generate_file_url(filename, folder):
     return url_for("serve_file", folder=folder, filename=filename, _external=True)
 
 
-# =============================================================================
-# API ENDPOINTS
-# =============================================================================
+def validate_float_param(value, default, param_name, min_val=0.0, max_val=1.0):
+    """Validate và convert float parameter với error handling"""
+    try:
+        result = float(value) if value else default
+        if not (min_val <= result <= max_val):
+            raise ValueError(f"{param_name} must be between {min_val} and {max_val}")
+        return result
+    except (ValueError, TypeError) as e:
+        raise ValueError(f"Invalid {param_name}: {value}. Error: {str(e)}")
 
 
-@api_bp.route("/api/health", methods=["GET"])
-def health_check():
-    """Health check endpoint"""
-    return jsonify(
-        {
-            "status": "healthy",
-            "service": "Tennis Analysis API",
-            "timestamp": datetime.now().isoformat(),
-        }
-    )
+def validate_court_bounds(court_bounds_str, default_bounds):
+    """Validate và parse court_bounds parameter"""
+    if not court_bounds_str:
+        return default_bounds
+
+    try:
+        parts = court_bounds_str.split(",")
+        if len(parts) != 4:
+            raise ValueError(f"court_bounds must have exactly 4 values (x1,y1,x2,y2), got {len(parts)}")
+
+        bounds = tuple(int(p.strip()) for p in parts)
+
+        # Validate logic: x2 > x1, y2 > y1
+        x1, y1, x2, y2 = bounds
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError(f"Invalid court_bounds: x2 must > x1 and y2 must > y1")
+
+        return bounds
+    except ValueError as e:
+        raise ValueError(f"Invalid court_bounds format: {court_bounds_str}. Error: {str(e)}")
 
 
-@api_bp.route("/api/analyze", methods=["POST"])
-def analyze_video():
+def process_video_async(
+    video_path,
+    request_id,
+    request_output_folder,
+    callback_url,
+    original_video_path,
+    ball_conf,
+    person_conf,
+    angle_threshold,
+    intersection_threshold,
+    court_bounds,
+):
     """
-    Endpoint chính để phân tích video tennis
+    Xử lý video trong background thread và gọi callback khi hoàn thành
 
-    Parameters (form-data):
-        - video: Video file (required)
-        - ball_conf: Ball detection confidence (default: 0.7)
-        - person_conf: Person detection confidence (default: 0.6)
-        - angle_threshold: Angle threshold (default: 50)
-        - intersection_threshold: Intersection threshold (default: 100)
-        - court_bounds: Court bounds as "x1,y1,x2,y2" (default: "100,100,400,500")
-
-    Returns:
-        JSON trực tiếp với kết quả phân tích và links đến hình ảnh/video
+    Args:
+        video_path: Đường dẫn video đã upload (local)
+        request_id: ID của request
+        request_output_folder: Thư mục output
+        callback_url: URL để gọi callback khi xử lý xong
+        original_video_path: Đường dẫn video gốc trên server (để trả về trong callback)
+        ball_conf, person_conf, angle_threshold, intersection_threshold, court_bounds: Các parameters phân tích
     """
     try:
-        # Kiểm tra file có được upload không
-        if "video" not in request.files:
-            return jsonify({"error": "No video file provided"}), 400
+        print(f"[ASYNC] Starting video analysis for request {request_id}")
 
-        file = request.files["video"]
-
-        if file.filename == "":
-            return jsonify({"error": "No selected file"}), 400
-
-        if not allowed_file(file.filename):
-            return (
-                jsonify(
-                    {
-                        "error": f"Invalid file type. Allowed: {settings.allowed_extensions}"
-                    }
-                ),
-                400,
-            )
-
-        # Lưu video upload
-        filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4().hex}_{filename}"
-        video_path = os.path.join(settings.upload_folder, unique_filename)
-        file.save(video_path)
-
-        # Tạo thư mục output riêng cho request này
-        request_id = uuid.uuid4().hex
-        request_output_folder = os.path.join(settings.output_folder, request_id)
-        os.makedirs(request_output_folder, exist_ok=True)
-
-        # Lấy parameters từ request
-        ball_conf = float(request.form.get("ball_conf", settings.default_ball_conf))
-        person_conf = float(
-            request.form.get("person_conf", settings.default_person_conf)
-        )
-        angle_threshold = float(
-            request.form.get("angle_threshold", settings.default_angle_threshold)
-        )
-        intersection_threshold = float(
-            request.form.get(
-                "intersection_threshold", settings.default_intersection_threshold
-            )
-        )
-
-        # Parse court bounds
-        court_bounds_str = request.form.get(
-            "court_bounds", ",".join(map(str, settings.default_court_bounds))
-        )
-        court_bounds = tuple(map(int, court_bounds_str.split(",")))
+        # Tạo analyzer instance mới cho request này (tránh race condition)
+        analyzer = create_analyzer()
 
         # Phân tích video
         results = analyzer.analyze_video(
@@ -179,9 +162,8 @@ def analyze_video():
             court_bounds=court_bounds,
         )
 
-        # Xử lý kết quả và tạo URLs - Trả về trực tiếp
-        result = {
-            "request_id": request_id,
+        # Xử lý kết quả và tạo analysis_result
+        analysis_result = {
             "timestamp": datetime.now().isoformat(),
             "expires_at": (
                 datetime.now() + timedelta(hours=settings.cleanup_hours)
@@ -201,7 +183,7 @@ def analyze_video():
             "player",
         )
 
-        result["highest_speed_info"] = {
+        analysis_result["highest_speed_info"] = {
             "frame": highest_speed["frame"],
             "time_seconds": round(highest_speed["time_seconds"], 2),
             "velocity": round(highest_speed["velocity"], 2),
@@ -239,11 +221,11 @@ def analyze_video():
                     else None
                 ),
             }
-            result["best_players"].append(player_data)
+            analysis_result["best_players"].append(player_data)
 
         # 3. Xử lý match statistics
         stats = results["match_statistics"]
-        result["match_statistics"] = {
+        analysis_result["match_statistics"] = {
             "rally_ratio": round(stats["rally_ratio"], 4),
             "in_court_ratio": round(stats["in_court_ratio"], 4),
             "out_court_ratio": round(stats["out_court_ratio"], 4),
@@ -256,24 +238,236 @@ def analyze_video():
         if results["visualization_video_path"] and os.path.exists(
             results["visualization_video_path"]
         ):
-            # Copy video vào output folder
             video_filename = f"visualization_{request_id}.mp4"
             new_video_path = os.path.join(request_output_folder, video_filename)
             shutil.copy2(results["visualization_video_path"], new_video_path)
-            result["visualization_video_url"] = generate_file_url(
+            analysis_result["visualization_video_url"] = generate_file_url(
                 video_filename, request_id
             )
+            # Xóa temp visualization video sau khi copy
+            try:
+                os.remove(results["visualization_video_path"])
+                print(f"[CLEANUP] Deleted temp visualization video")
+            except Exception as e:
+                print(f"[CLEANUP WARNING] Failed to delete temp video: {e}")
 
-        # Xóa video upload ngay sau khi xử lý xong
+        # Xóa video upload sau khi xử lý xong
         try:
             if os.path.exists(video_path):
                 os.remove(video_path)
-                print(f"[CLEANUP] Deleted uploaded video immediately: {video_path}")
+                print(f"[CLEANUP] Deleted uploaded video: {video_path}")
         except Exception as cleanup_error:
             print(f"[CLEANUP ERROR] Failed to delete {video_path}: {cleanup_error}")
 
-        # Trả về trực tiếp result JSON
-        return jsonify(result), 200
+        # Tạo callback payload theo format server yêu cầu
+        callback_payload = {
+            "video_path": original_video_path,
+            "request_id": request_id,
+            "status": "success",
+            "analysis_result": analysis_result,
+        }
+
+        # Gọi callback với retry logic (tối đa 3 lần)
+        print(f"[ASYNC] Sending callback to {callback_url}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    callback_url,
+                    json=callback_payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=30,
+                )
+                response_text = response.text[:200] if response.text else ""
+                print(f"[ASYNC] Callback response: {response.status_code} - {response_text}")
+                if response.status_code < 500:  # Success hoặc client error, không retry
+                    break
+            except Exception as callback_error:
+                print(f"[ASYNC ERROR] Callback attempt {attempt + 1}/{max_retries} failed: {callback_error}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+
+        print(f"[ASYNC] Completed video analysis for request {request_id}")
+
+    except Exception as e:
+        print(f"[ASYNC ERROR] Failed to process request {request_id}: {e}")
+
+        # Xóa video upload nếu có lỗi
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                print(f"[CLEANUP] Deleted uploaded video after error: {video_path}")
+        except:
+            pass
+
+        # Xóa output folder nếu có lỗi (tránh tích tụ thư mục rác)
+        try:
+            if os.path.exists(request_output_folder):
+                shutil.rmtree(request_output_folder)
+                print(f"[CLEANUP] Deleted output folder after error: {request_output_folder}")
+        except Exception as cleanup_error:
+            print(f"[CLEANUP ERROR] Failed to delete output folder: {cleanup_error}")
+
+        # Tạo error callback payload theo format server yêu cầu
+        error_payload = {
+            "video_path": original_video_path,
+            "request_id": request_id,
+            "status": "failed",
+            "error": str(e),
+        }
+
+        # Gọi error callback với retry logic (tối đa 3 lần)
+        print(f"[ASYNC] Sending error callback to {callback_url}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                requests.post(
+                    callback_url,
+                    json=error_payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=30,
+                )
+                print(f"[ASYNC] Error callback sent successfully")
+                break
+            except Exception as callback_error:
+                print(f"[ASYNC ERROR] Error callback attempt {attempt + 1}/{max_retries} failed: {callback_error}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+
+
+# =============================================================================
+# API ENDPOINTS
+# =============================================================================
+
+
+@api_bp.route("/api/health", methods=["GET"])
+def health_check():
+    """Health check endpoint"""
+    return jsonify(
+        {
+            "status": "healthy",
+            "service": "Tennis Analysis API",
+            "timestamp": datetime.now().isoformat(),
+        }
+    )
+
+
+@api_bp.route("/api/analyze", methods=["POST"])
+def analyze_video():
+    """
+    Endpoint phân tích video tennis (async - luôn trả về ngay, callback khi xong)
+
+    Parameters (form-data):
+        - video: Video file (required)
+        - callback_url: URL để gọi callback khi xử lý xong (required)
+        - original_video_path: Đường dẫn video gốc trên server (required)
+        - ball_conf: Ball detection confidence (default: 0.7)
+        - person_conf: Person detection confidence (default: 0.6)
+        - angle_threshold: Angle threshold (default: 50)
+        - intersection_threshold: Intersection threshold (default: 100)
+        - court_bounds: Court bounds as "x1,y1,x2,y2" (default: "100,100,400,500")
+
+    Returns:
+        Trả về ngay: {"status": "processing", "request_id": "..."}
+        Khi xử lý xong sẽ POST callback đến callback_url với kết quả
+    """
+    try:
+        # Kiểm tra file có được upload không
+        if "video" not in request.files:
+            return jsonify({"error": "No video file provided"}), 400
+
+        file = request.files["video"]
+
+        if file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
+
+        if not allowed_file(file.filename):
+            return (
+                jsonify(
+                    {
+                        "error": f"Invalid file type. Allowed: {settings.allowed_extensions}"
+                    }
+                ),
+                400,
+            )
+
+        # Kiểm tra callback_url (required)
+        callback_url = request.form.get("callback_url")
+        if not callback_url:
+            return jsonify({"error": "callback_url is required"}), 400
+
+        original_video_path = request.form.get("original_video_path", "")
+
+        # Lưu video upload
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4().hex}_{filename}"
+        video_path = os.path.join(settings.upload_folder, unique_filename)
+        file.save(video_path)
+
+        # Tạo thư mục output riêng cho request này
+        request_id = uuid.uuid4().hex
+        request_output_folder = os.path.join(settings.output_folder, request_id)
+        os.makedirs(request_output_folder, exist_ok=True)
+
+        # Lấy và validate parameters từ request
+        try:
+            ball_conf = validate_float_param(
+                request.form.get("ball_conf"),
+                settings.default_ball_conf,
+                "ball_conf", 0.0, 1.0
+            )
+            person_conf = validate_float_param(
+                request.form.get("person_conf"),
+                settings.default_person_conf,
+                "person_conf", 0.0, 1.0
+            )
+            angle_threshold = validate_float_param(
+                request.form.get("angle_threshold"),
+                settings.default_angle_threshold,
+                "angle_threshold", 0.0, 180.0
+            )
+            intersection_threshold = validate_float_param(
+                request.form.get("intersection_threshold"),
+                settings.default_intersection_threshold,
+                "intersection_threshold", 0.0, 1000.0
+            )
+            court_bounds = validate_court_bounds(
+                request.form.get("court_bounds"),
+                settings.default_court_bounds
+            )
+        except ValueError as e:
+            # Xóa video đã upload nếu validation fail
+            if os.path.exists(video_path):
+                os.remove(video_path)
+            return jsonify({"error": str(e)}), 400
+
+        print(f"[ASYNC] Received request {request_id}, callback: {callback_url}")
+
+        # Tạo background thread để xử lý video
+        processing_thread = threading.Thread(
+            target=process_video_async,
+            args=(
+                video_path,
+                request_id,
+                request_output_folder,
+                callback_url,
+                original_video_path,
+                ball_conf,
+                person_conf,
+                angle_threshold,
+                intersection_threshold,
+                court_bounds,
+            ),
+            daemon=True,
+        )
+        processing_thread.start()
+
+        # Trả về ngay lập tức
+        return jsonify({
+            "status": "processing",
+            "request_id": request_id,
+            "message": "Video is being processed. Results will be sent to callback URL.",
+        }), 202
 
     except Exception as e:
         # Nếu có lỗi, vẫn cố gắng xóa video đã upload
@@ -319,6 +513,9 @@ def check_var():
     Returns:
         JSON với URLs đến các video đã xử lý (crop, mask) và video gốc
     """
+    video_path = None
+    request_output_folder = None
+
     try:
         # Kiểm tra file có được upload không
         if "video" not in request.files:
@@ -350,10 +547,17 @@ def check_var():
         request_output_folder = os.path.join(settings.output_folder, request_id)
         os.makedirs(request_output_folder, exist_ok=True)
 
+        # Tạo instance mới của VarDetector cho request này (thread safety)
+        var_detector = create_var_detector()
+
         # Phân tích video với VAR Detector
         results = var_detector.detect_video(
             video_path, output_folder=request_output_folder
         )
+
+        # Validate results dictionary
+        if not results or not isinstance(results, dict):
+            raise ValueError("VAR detection returned invalid results")
 
         # Copy các video kết quả vào output folder và tạo URLs
         crop_filename = f"var_crop_{request_id}.mp4"
@@ -362,22 +566,42 @@ def check_var():
         crop_output_path = os.path.join(request_output_folder, crop_filename)
         mask_output_path = os.path.join(request_output_folder, mask_filename)
 
-        # Copy files từ thư mục tạm sang output folder
-        if os.path.exists(results["crop"]):
-            shutil.copy2(results["crop"], crop_output_path)
-            os.remove(results["crop"])  # Xóa file tạm
+        # Prepare response videos dict
+        videos_result = {}
 
-        if os.path.exists(results["mask"]):
-            shutil.copy2(results["mask"], mask_output_path)
-            os.remove(results["mask"])  # Xóa file tạm
+        # Copy crop file nếu tồn tại
+        crop_path = results.get("crop")
+        if crop_path and os.path.exists(crop_path):
+            shutil.copy2(crop_path, crop_output_path)
+            os.remove(crop_path)  # Xóa file tạm
+            crop_view_url = generate_file_url(crop_filename, request_id)
+            videos_result["crop"] = {
+                "view_url": crop_view_url,
+                "download_url": f"{crop_view_url}?download=true",
+                "filename": crop_filename,
+            }
+        else:
+            print(f"[WARNING] Crop video not found or not generated: {crop_path}")
+            videos_result["crop"] = None
 
-        # Tạo URLs cho view và download
-        crop_view_url = generate_file_url(crop_filename, request_id)
-        mask_view_url = generate_file_url(mask_filename, request_id)
+        # Copy mask file nếu tồn tại
+        mask_path = results.get("mask")
+        if mask_path and os.path.exists(mask_path):
+            shutil.copy2(mask_path, mask_output_path)
+            os.remove(mask_path)  # Xóa file tạm
+            mask_view_url = generate_file_url(mask_filename, request_id)
+            videos_result["mask"] = {
+                "view_url": mask_view_url,
+                "download_url": f"{mask_view_url}?download=true",
+                "filename": mask_filename,
+            }
+        else:
+            print(f"[WARNING] Mask video not found or not generated: {mask_path}")
+            videos_result["mask"] = None
 
-        # Tạo download URLs (thêm parameter download=true)
-        crop_download_url = f"{crop_view_url}?download=true"
-        mask_download_url = f"{mask_view_url}?download=true"
+        # Kiểm tra xem có ít nhất 1 video được tạo không
+        if videos_result["crop"] is None and videos_result["mask"] is None:
+            raise ValueError("No output videos were generated. Check if the video contains detectable content.")
 
         # Tạo response
         result = {
@@ -386,19 +610,8 @@ def check_var():
             "expires_at": (
                 datetime.now() + timedelta(hours=settings.cleanup_hours)
             ).isoformat(),
-            "videos": {
-                "crop": {
-                    "view_url": crop_view_url,
-                    "download_url": crop_download_url,
-                    "filename": crop_filename,
-                },
-                "mask": {
-                    "view_url": mask_view_url,
-                    "download_url": mask_download_url,
-                    "filename": mask_filename,
-                },
-            },
-            "original_video": results["origin"],
+            "videos": videos_result,
+            "original_video": results.get("origin", video_path),
         }
 
         # Lên lịch xóa video sau 3 giờ
@@ -407,13 +620,21 @@ def check_var():
         return jsonify(result), 200
 
     except Exception as e:
-        # Nếu có lỗi, vẫn cố gắng xóa video đã upload ngay lập tức
+        # Cleanup on error
         try:
-            if "video_path" in locals() and os.path.exists(video_path):
+            if video_path and os.path.exists(video_path):
                 os.remove(video_path)
                 print(f"[CLEANUP] Deleted uploaded video after error: {video_path}")
-        except:
-            pass
+        except Exception as cleanup_error:
+            print(f"[CLEANUP ERROR] Failed to delete video: {cleanup_error}")
+
+        try:
+            if request_output_folder and os.path.exists(request_output_folder):
+                shutil.rmtree(request_output_folder)
+                print(f"[CLEANUP] Deleted output folder after error: {request_output_folder}")
+        except Exception as cleanup_error:
+            print(f"[CLEANUP ERROR] Failed to delete output folder: {cleanup_error}")
+
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 
