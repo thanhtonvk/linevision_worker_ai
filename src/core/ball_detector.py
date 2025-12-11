@@ -76,9 +76,7 @@ class BallDetector:
     def detect_positions(self, frames):
         """Detect vị trí bóng trong các frames (sequential - từng frame một)"""
         positions = []
-        for batch in batches:
-            if gpu_memory_full():
-                self.reset_model()
+        for batch in frames:
             results = self.model.predict(
                 batch, batch=self.batch_size, verbose=False, conf=self.conf
             )

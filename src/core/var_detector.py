@@ -102,9 +102,7 @@ class VarDetector:
     def detect_positions(self, frames):
         positions = []
         with torch.no_grad():
-            for batch in batches:
-                if gpu_memory_full():
-                    self.reset_model()
+            for batch in frames:
                 results = self.model.predict(
                     batch,
                     batch=self.batch_size,
