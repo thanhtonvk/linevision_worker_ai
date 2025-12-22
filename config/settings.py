@@ -11,8 +11,8 @@ BASE_DIR = Path(__file__).parent.parent
 # Model paths
 MODEL_DIR = BASE_DIR / "src/models"
 BALL_MODEL_PATH = str(MODEL_DIR / "ball_best.pt")
-PERSON_MODEL_PATH = str(MODEL_DIR / "yolov8n.pt")  # Nano for ball-person intersection
-POSE_MODEL_PATH = str(MODEL_DIR / "yolov8m-pose.pt")  # Medium for better pose detection accuracy
+PERSON_MODEL_PATH = "yolo12m.pt" # Nano for ball-person intersection
+POSE_MODEL_PATH = "yolo12m-pose.pt"  # Medium for better pose detection accuracy
 
 # Upload and output folders
 UPLOAD_FOLDER = str(BASE_DIR / "uploads")

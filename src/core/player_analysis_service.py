@@ -26,8 +26,8 @@ class PlayerAnalysisService:
     def __init__(
         self,
         ball_model_path: str = "models/ball_best.pt",
-        person_model_path: str = "models/yolov8n.pt",
-        pose_model_path: str = "models/yolov8n-pose.pt",
+        person_model_path: str = "yolo12m.pt",
+        pose_model_path: str = "yolo12m-pose.pt",
         batch_size: int = 16
     ):
         """
