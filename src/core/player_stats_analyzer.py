@@ -379,7 +379,7 @@ class PlayerStatsAnalyzer:
     # =========================================================================
     def calculate_player_ranking(self) -> List[dict]:
         """
-        Tính bảng xếp hạng người chơi
+        Tính bảng xếp hạng người chơi (chỉ tính người có cú đánh)
 
         Returns:
             List sorted by score: [
@@ -399,8 +399,14 @@ class PlayerStatsAnalyzer:
         all_speeds = []
         all_hits = []
 
+        # Lọc player có cú đánh
+        active_players = [
+            pid for pid in self.player_shots.keys()
+            if len(self.player_shots[pid]) > 0
+        ]
+
         # Thu thập dữ liệu để normalize
-        for player_id in self.player_shots.keys():
+        for player_id in active_players:
             accuracy = self.calculate_accuracy(player_id)
             serve_speed = self.calculate_serve_speed(player_id)
             drive_speed = self.calculate_drive_speed(player_id)
@@ -412,8 +418,8 @@ class PlayerStatsAnalyzer:
         max_speed = max(all_speeds) if all_speeds else 1
         max_hits = max(all_hits) if all_hits else 1
 
-        # Tính điểm cho từng người
-        for player_id in self.player_shots.keys():
+        # Tính điểm cho từng người (chỉ active players)
+        for player_id in active_players:
             accuracy = self.calculate_accuracy(player_id)
             serve_speed = self.calculate_serve_speed(player_id)
             drive_speed = self.calculate_drive_speed(player_id)
@@ -485,14 +491,18 @@ class PlayerStatsAnalyzer:
 
     def get_all_players_stats(self) -> dict:
         """
-        Lấy tất cả chỉ số cho tất cả người chơi
+        Lấy tất cả chỉ số cho tất cả người chơi có cú đánh
 
         Returns:
             {player_id: stats_dict, ...}
         """
         all_stats = {}
+
+        # Chỉ trả về player có cú đánh (hits > 0)
         for player_id in self.player_shots.keys():
-            all_stats[player_id] = self.get_full_player_stats(player_id)
+            shots = self.player_shots[player_id]
+            if len(shots) > 0:  # Chỉ tính player có cú đánh
+                all_stats[player_id] = self.get_full_player_stats(player_id)
 
         # Thêm ranking
         rankings = self.calculate_player_ranking()
@@ -501,4 +511,5 @@ class PlayerStatsAnalyzer:
             if pid in all_stats:
                 all_stats[pid]["ranking"] = r
 
+        print(f"📊 Thống kê: {len(all_stats)} người chơi có cú đánh")
         return all_stats
