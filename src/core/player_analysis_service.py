@@ -3,11 +3,9 @@
 # =============================================================================
 
 import cv2
-import numpy as np
 import os
-import uuid
 import time
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple
 from datetime import datetime
 
 from .ball_detector import BallDetector
@@ -27,7 +25,6 @@ class PlayerAnalysisService:
         self,
         ball_model_path: str = "models/ball_best.pt",
         person_model_path: str = "yolo11m.pt",
-        pose_model_path: str = "yolo11m-pose.pt",
         batch_size: int = 16
     ):
         """
@@ -36,7 +33,6 @@ class PlayerAnalysisService:
         Args:
             ball_model_path: Đường dẫn model detect bóng
             person_model_path: Đường dẫn model detect người
-            pose_model_path: Đường dẫn model detect pose
             batch_size: Batch size for inference (default 16 for 12GB GPU)
         """
         self.batch_size = batch_size
@@ -45,9 +41,9 @@ class PlayerAnalysisService:
             person_model_path=person_model_path,
             batch_size=batch_size
         )
-        # PersonTracker chỉ sử dụng pose model (đã bao gồm cả bbox và keypoints)
+        # PersonTracker sử dụng yolo11m cho person detection
         self.person_tracker = PersonTracker(
-            pose_model_path=pose_model_path,
+            person_model_path=person_model_path,
             batch_size=batch_size
         )
 
@@ -62,7 +58,8 @@ class PlayerAnalysisService:
         person_conf: float = 0.6,
         angle_threshold: float = 50,
         intersection_threshold: float = 100,
-        base_url: str = ""
+        base_url: str = "",
+        create_highlights: bool = True
     ) -> dict:
         """
         Phân tích video và trả về kết quả JSON
@@ -78,6 +75,7 @@ class PlayerAnalysisService:
             angle_threshold: Ngưỡng góc thay đổi hướng
             intersection_threshold: Ngưỡng giao cắt bóng-người
             base_url: URL cơ sở cho file paths (vd: "outputs/abc123")
+            create_highlights: Tạo video highlight cho từng player
 
         Returns:
             Dict kết quả phân tích
@@ -121,19 +119,19 @@ class PlayerAnalysisService:
 
         timings["ball_detection"] = time.time() - step_start
 
-        # 3. Person & Pose Detection (chỉ chạy 1 lần với pose model)
-        # Pose model trả về cả bbox và keypoints - tối ưu không cần chạy 2 model
+        # 3. Person Detection
         step_start = time.time()
         self.person_tracker.tracked_persons = {}
         self.person_tracker.next_person_id = 1
         self.person_tracker.ball_hits_by_person.clear()
         self.person_tracker.player_positions.clear()
+        self.person_tracker.player_frames.clear()
 
-        # Chạy pose detection trước để lấy person_detections
-        pose_detections, raw_person_detections = self.person_tracker._batch_pose_detection(
+        # Chạy person detection
+        raw_person_detections = self.person_tracker._batch_person_detection(
             frames, conf_threshold=person_conf
         )
-        timings["person_pose_detection"] = time.time() - step_start
+        timings["person_detection"] = time.time() - step_start
 
         # 4. Phân tích thay đổi hướng (sử dụng cached person_detections)
         step_start = time.time()
@@ -147,12 +145,12 @@ class PlayerAnalysisService:
         )
         timings["direction_analysis"] = time.time() - step_start
 
-        # 5. Tracking người (sử dụng pose detections đã có)
+        # 5. Tracking người
         step_start = time.time()
         person_detections_tracked = []
         for frame_idx in range(len(frames)):
-            frame_poses = pose_detections[frame_idx]
-            tracked_frame_data = self.person_tracker._track_persons_from_poses(frame_poses, frame_idx)
+            frame_persons = raw_person_detections[frame_idx]
+            tracked_frame_data = self.person_tracker._track_persons_across_frames(frame_persons, frame_idx)
             person_detections_tracked.append(tracked_frame_data)
 
             if frame_idx < len(ball_positions) and ball_positions[frame_idx] != (-1, -1):
@@ -257,7 +255,47 @@ class PlayerAnalysisService:
 
         timings["visualization"] = time.time() - step_start
 
-        # 7. Xây dựng kết quả JSON
+        # 8. Tạo video highlight cho từng player
+        highlight_videos = {}
+        if create_highlights:
+            step_start = time.time()
+
+            # Video highlight cho từng player
+            highlight_videos = self.person_tracker.create_player_highlight_videos(
+                frames=frames,
+                output_folder=output_folder,
+                fps=fps,
+                min_frames=30,
+                padding_frames=15,
+                base_url=base_url
+            )
+
+            # Video highlight tổng hợp
+            combined_highlight_path = os.path.join(output_folder, "combined_highlight.mp4")
+            combined_info = self.person_tracker.create_combined_highlight_video(
+                frames=frames,
+                ball_positions=ball_positions,
+                output_path=combined_highlight_path,
+                fps=fps,
+                padding_frames=30
+            )
+
+            if combined_info:
+                output_files["combined_highlight"] = f"{base_url}/combined_highlight.mp4"
+                output_files["combined_highlight_info"] = combined_info
+
+            # Thêm highlight video paths vào player_images
+            for player_id, highlight_info in highlight_videos.items():
+                if player_id in player_images:
+                    player_images[player_id]["highlight_video"] = highlight_info.get("video_path", "")
+                    player_images[player_id]["highlight_info"] = {
+                        "hit_count": highlight_info.get("hit_count", 0),
+                        "duration_seconds": highlight_info.get("duration_seconds", 0)
+                    }
+
+            timings["highlight_videos"] = time.time() - step_start
+
+        # 9. Xây dựng kết quả JSON
         result = {
             "video_info": {
                 "path": video_path,
@@ -294,6 +332,7 @@ class PlayerAnalysisService:
                 **output_files,
                 "per_player": player_images
             },
+            "highlight_videos": highlight_videos,
             "timestamp": datetime.now().isoformat()
         }
 
@@ -326,7 +365,8 @@ class PlayerAnalysisService:
                     "short_pct": round(stats.get("shot_density", {}).get("short_pct", 0), 1)
                 },
                 "ranking": stats.get("ranking", {}),
-                "images": player_images.get(player_id, {})
+                "images": player_images.get(player_id, {}),
+                "highlight": highlight_videos.get(player_id, {})
             }
             result["players"][f"player_{player_id}"] = player_data
 

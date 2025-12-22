@@ -1,5 +1,5 @@
 # =============================================================================
-# PERSON TRACKER CLASS - TRACKING NGƯỜI VÀ POSE ESTIMATION
+# PERSON TRACKER CLASS - TRACKING NGƯỜI CHƠI TENNIS
 # =============================================================================
 
 import cv2
@@ -8,35 +8,36 @@ from ultralytics import YOLO
 from collections import defaultdict
 import math
 import gc
+import os
 from config.settings import settings
 
 
 class PersonTracker:
     """
-    Class để tracking người và phân tích pose trong tennis
+    Class để tracking người chơi tennis
+    Sử dụng YOLO11m cho person detection (không dùng pose)
     Optimized for 12GB GPU with batch inference
     """
 
     def __init__(
         self,
-        pose_model_path="yolo11m-pose.pt",
+        person_model_path="yolo11m.pt",
         batch_size=16,  # Optimized for 12GB GPU
     ):
-        # Chỉ sử dụng pose model - nó trả về cả bbox và keypoints
-        # Không cần person_model riêng, giảm bộ nhớ GPU
-        self.pose_model = YOLO(pose_model_path)
+        self.person_model = YOLO(person_model_path)
         self.batch_size = batch_size
         self.tracked_persons = {}  # {person_id: person_data}
         self.next_person_id = 1
         self.ball_hits_by_person = defaultdict(list)  # {person_id: [hit_data]}
         self.player_positions = defaultdict(list)  # {player_id: [(frame, x, y), ...]}
+        self.player_frames = defaultdict(list)  # {player_id: [frame_indices]} - NEW for highlight
         self.max_frame_height = settings.max_frame_height
         self.enable_frame_resize = settings.enable_frame_resize
 
         # Move model to GPU if available
         import torch
         if torch.cuda.is_available():
-            self.pose_model.to('cuda')
+            self.person_model.to('cuda')
 
     def _resize_frame(self, frame):
         """
@@ -65,23 +66,19 @@ class PersonTracker:
             for i in range(0, len(frames), self.batch_size)
         ]
 
-    def _batch_pose_detection(self, frames, conf_threshold=0.5):
-        """Batch pose detection cho tất cả frames
-        Trả về cả person bboxes và keypoints từ pose model (gộp 2 trong 1)
+    def _batch_person_detection(self, frames, conf_threshold=0.5):
+        """Batch person detection cho tất cả frames
 
         Args:
             frames: List of video frames
             conf_threshold: Confidence threshold for detection
 
         Returns:
-            Tuple of (all_pose_detections, all_person_detections)
-            - all_pose_detections: List of pose data for each frame
-            - all_person_detections: List of person bboxes for each frame (compatible with ball_detector)
+            List of person detections for each frame
         """
         import torch
 
         batches = self._batch_frames(frames)
-        all_pose_detections = []
         all_person_detections = []
 
         for batch_idx, batch in enumerate(batches):
@@ -92,7 +89,7 @@ class PersonTracker:
                 resized_batch.append(resized_frame)
                 scales.append(scale)
 
-            pose_results = self.pose_model.predict(
+            results = self.person_model.predict(
                 resized_batch,
                 batch=len(resized_batch),
                 verbose=False,
@@ -100,16 +97,17 @@ class PersonTracker:
                 half=True
             )
 
-            for res_idx, (pose_result, scale) in enumerate(zip(pose_results, scales)):
-                frame_poses = []
+            for res_idx, (result, scale) in enumerate(zip(results, scales)):
                 frame_persons = []
 
-                # Pose model trả về cả boxes và keypoints
-                if pose_result.boxes is not None and pose_result.keypoints is not None:
-                    boxes = pose_result.boxes
-                    keypoints_list = pose_result.keypoints
+                if result.boxes is not None:
+                    boxes = result.boxes
 
                     for i in range(len(boxes)):
+                        # Chỉ lấy class 0 (person)
+                        if int(boxes.cls[i]) != 0:
+                            continue
+
                         # Extract bbox
                         x1, y1, x2, y2 = boxes.xyxy[i].cpu().numpy()
                         box_conf = float(boxes.conf[i].cpu().numpy())
@@ -118,27 +116,11 @@ class PersonTracker:
                         if scale != 1.0:
                             x1, y1, x2, y2 = x1/scale, y1/scale, x2/scale, y2/scale
 
-                        # Extract keypoints
-                        kpts = keypoints_list.xy[i].cpu().numpy()
-                        kpts_conf = keypoints_list.conf[i].cpu().numpy()
-
-                        if scale != 1.0:
-                            kpts = kpts / scale
-
-                        frame_poses.append({
-                            "keypoints": kpts,
-                            "conf": kpts_conf,
-                            "bbox": (int(x1), int(y1), int(x2), int(y2)),
-                            "box_conf": box_conf
-                        })
-
-                        # Person detection format (compatible with ball_detector)
                         frame_persons.append({
                             "bbox": (int(x1), int(y1), int(x2), int(y2)),
                             "conf": box_conf
                         })
 
-                all_pose_detections.append(frame_poses)
                 all_person_detections.append(frame_persons)
 
             if batch_idx % 20 == 0 and batch_idx > 0:
@@ -146,13 +128,12 @@ class PersonTracker:
                     torch.cuda.empty_cache()
                 gc.collect()
 
-        return all_pose_detections, all_person_detections
+        return all_person_detections
 
     def detect_and_track_persons(
         self, frames, ball_positions, direction_flags, conf_threshold=0.5
     ):
         """Detect và track người qua các frame với batch inference
-        Sử dụng pose model duy nhất cho cả person detection và pose estimation
 
         Args:
             frames: List of video frames
@@ -161,21 +142,18 @@ class PersonTracker:
             conf_threshold: Confidence threshold for detection
 
         Returns:
-            Tuple of (tracked_person_detections, pose_detections, raw_person_detections)
-            - tracked_person_detections: List of tracked person data per frame
-            - pose_detections: List of pose data per frame
-            - raw_person_detections: List of person bboxes per frame (for ball_detector)
+            Tuple of (tracked_person_detections, raw_person_detections)
         """
-        # Chạy pose detection 1 lần duy nhất - lấy cả pose và person bboxes
-        pose_detections, raw_person_detections = self._batch_pose_detection(frames, conf_threshold)
+        # Chạy person detection
+        raw_person_detections = self._batch_person_detection(frames, conf_threshold)
 
         tracked_person_detections = []
 
         for frame_idx in range(len(frames)):
-            frame_poses = pose_detections[frame_idx]
+            frame_persons = raw_person_detections[frame_idx]
 
-            # Pose model đã có sẵn bbox trong mỗi pose, sử dụng trực tiếp
-            tracked_frame_data = self._track_persons_from_poses(frame_poses, frame_idx)
+            # Track người qua các frame
+            tracked_frame_data = self._track_persons_across_frames(frame_persons, frame_idx)
 
             tracked_person_detections.append(tracked_frame_data)
 
@@ -190,41 +168,24 @@ class PersonTracker:
             if frame_idx % 50 == 0 and frame_idx > 0:
                 gc.collect()
 
-        return tracked_person_detections, pose_detections, raw_person_detections
+        return tracked_person_detections, raw_person_detections
 
-    def _track_persons_from_poses(self, frame_poses, frame_idx):
-        """Track người từ pose detections (đã có sẵn bbox)
-
-        Args:
-            frame_poses: List of pose data với bbox đã có sẵn
-            frame_idx: Frame index
-
-        Returns:
-            List of tracked person data
-        """
+    def _track_persons_across_frames(self, frame_persons, frame_idx):
+        """Track người qua các frame sử dụng IoU"""
         tracked_data = []
 
-        for pose_data in frame_poses:
-            bbox = pose_data.get("bbox")
-            if bbox is None:
-                continue
-
-            person = {
-                "bbox": bbox,
-                "conf": pose_data.get("box_conf", 0.5)
-            }
-            pose = {
-                "keypoints": pose_data.get("keypoints"),
-                "conf": pose_data.get("conf")
-            }
+        for person in frame_persons:
+            bbox = person["bbox"]
+            conf = person["conf"]
 
             # Tìm person gần nhất trong frame trước
             best_match_id = None
             best_iou = 0
 
             for person_id, person_data in self.tracked_persons.items():
-                if person_data["last_seen"] == frame_idx - 1:
-                    iou = self._calculate_iou(person["bbox"], person_data["bbox"])
+                # Cho phép gap tối đa 5 frames
+                if frame_idx - person_data["last_seen"] <= 5:
+                    iou = self._calculate_iou(bbox, person_data["bbox"])
                     if iou > best_iou and iou > 0.3:
                         best_iou = iou
                         best_match_id = person_id
@@ -232,9 +193,8 @@ class PersonTracker:
             if best_match_id is not None:
                 person_id = best_match_id
                 self.tracked_persons[person_id].update({
-                    "bbox": person["bbox"],
-                    "conf": person["conf"],
-                    "pose": pose,
+                    "bbox": bbox,
+                    "conf": conf,
                     "last_seen": frame_idx,
                     "frame_count": self.tracked_persons[person_id]["frame_count"] + 1,
                 })
@@ -242,9 +202,8 @@ class PersonTracker:
                 person_id = self.next_person_id
                 self.next_person_id += 1
                 self.tracked_persons[person_id] = {
-                    "bbox": person["bbox"],
-                    "conf": person["conf"],
-                    "pose": pose,
+                    "bbox": bbox,
+                    "conf": conf,
                     "first_seen": frame_idx,
                     "last_seen": frame_idx,
                     "frame_count": 1,
@@ -253,98 +212,16 @@ class PersonTracker:
             tracked_data.append({
                 "person_id": person_id,
                 "person": person,
-                "pose": pose
             })
 
             # Lưu vị trí người chơi cho heatmap
-            x1, y1, x2, y2 = person["bbox"]
+            x1, y1, x2, y2 = bbox
             center_x = (x1 + x2) / 2
             center_y = (y1 + y2) / 2
             self.player_positions[person_id].append((frame_idx, center_x, center_y))
 
-        return tracked_data
-
-    def _match_persons_with_poses(self, persons, poses):
-        """Match persons với poses dựa trên vị trí bbox"""
-        matched_data = []
-
-        for person in persons:
-            x1, y1, x2, y2 = person["bbox"]
-            person_center = ((x1 + x2) / 2, (y1 + y2) / 2)
-
-            best_pose = None
-            min_distance = float("inf")
-
-            for pose in poses:
-                valid_keypoints = pose["keypoints"][pose["conf"] > 0.5]
-                if len(valid_keypoints) > 0:
-                    pose_center = np.mean(valid_keypoints, axis=0)
-                    distance = np.linalg.norm(np.array(person_center) - pose_center)
-
-                    if distance < min_distance:
-                        min_distance = distance
-                        best_pose = pose
-
-            matched_data.append(
-                {"person": person, "pose": best_pose, "distance": min_distance}
-            )
-
-        return matched_data
-
-    def _track_persons_across_frames(self, matched_data, frame_idx):
-        """Track người qua các frame sử dụng IoU và distance"""
-        tracked_data = []
-
-        for data in matched_data:
-            person = data["person"]
-            pose = data["pose"]
-
-            # Tìm person gần nhất trong frame trước
-            best_match_id = None
-            best_iou = 0
-
-            for person_id, person_data in self.tracked_persons.items():
-                if person_data["last_seen"] == frame_idx - 1:  # Chỉ check frame trước
-                    iou = self._calculate_iou(person["bbox"], person_data["bbox"])
-                    if iou > best_iou and iou > 0.3:  # Threshold IoU
-                        best_iou = iou
-                        best_match_id = person_id
-
-            if best_match_id is not None:
-                # Update existing person
-                person_id = best_match_id
-                self.tracked_persons[person_id].update(
-                    {
-                        "bbox": person["bbox"],
-                        "conf": person["conf"],
-                        "pose": pose,
-                        "last_seen": frame_idx,
-                        "frame_count": self.tracked_persons[person_id]["frame_count"]
-                        + 1,
-                    }
-                )
-            else:
-                # Create new person
-                person_id = self.next_person_id
-                self.next_person_id += 1
-                self.tracked_persons[person_id] = {
-                    "bbox": person["bbox"],
-                    "conf": person["conf"],
-                    "pose": pose,
-                    "first_seen": frame_idx,
-                    "last_seen": frame_idx,
-                    "frame_count": 1,
-                }
-
-            tracked_data.append(
-                {"person_id": person_id, "person": person, "pose": pose}
-            )
-
-            # Lưu vị trí người chơi cho heatmap - NEW
-            x1, y1, x2, y2 = person["bbox"]
-            center_x = (x1 + x2) / 2
-            center_y = (y1 + y2) / 2
-            self.player_positions[person_id].append((frame_idx, center_x, center_y))
+            # Lưu frame index cho highlight video
+            self.player_frames[person_id].append(frame_idx)
 
         return tracked_data
 
@@ -376,307 +253,277 @@ class PersonTracker:
         if direction_flag == 2:  # Bóng được đánh bởi người
             ball_x, ball_y = ball_pos
 
+            # Mở rộng vùng kiểm tra
+            threshold = 100
+
             for person_data in tracked_persons:
                 person_id = person_data["person_id"]
                 x1, y1, x2, y2 = person_data["person"]["bbox"]
 
-                # Kiểm tra bóng có trong vùng người không
-                if x1 <= ball_x <= x2 and y1 <= ball_y <= y2:
+                # Kiểm tra bóng có gần người không
+                if (x1 - threshold <= ball_x <= x2 + threshold and
+                    y1 - threshold <= ball_y <= y2 + threshold):
                     hit_data = {
                         "frame": frame_idx,
                         "ball_pos": ball_pos,
                         "person_bbox": person_data["person"]["bbox"],
-                        "pose": person_data["pose"],
                         "person_id": person_id,
                     }
                     self.ball_hits_by_person[person_id].append(hit_data)
                     break
 
-    def analyze_tennis_technique(self, person_detections, court_bounds):
-        """Phân tích kỹ thuật tennis dựa trên pose estimation"""
-        print("Đang phân tích kỹ thuật tennis...")
+    def get_player_positions(self):
+        """Lấy vị trí người chơi theo thời gian cho heatmap"""
+        return dict(self.player_positions)
 
-        technique_analysis = {
-            "person_stats": {},
-            "technique_errors": [],
-            "pose_analysis": {},
-            "court_accuracy": {},
-        }
+    def get_player_frames(self):
+        """Lấy danh sách frame indices cho mỗi player"""
+        return dict(self.player_frames)
 
-        for person_id, person_data in self.tracked_persons.items():
-            hits = self.ball_hits_by_person[person_id]
+    def create_player_highlight_videos(
+        self,
+        frames,
+        output_folder,
+        fps=30,
+        min_frames=30,
+        padding_frames=15,
+        base_url=""
+    ):
+        """Tạo video highlight cho từng player
 
-            person_stats = {
-                "total_hits": len(hits),
-                "hits_in_court": 0,
-                "hits_out_court": 0,
-                "technique_errors": [],
-                "hit_details": [],  # Chi tiết từng cú đánh
-            }
+        Args:
+            frames: List of all video frames
+            output_folder: Thư mục lưu output
+            fps: FPS của video output
+            min_frames: Số frame tối thiểu để tạo highlight
+            padding_frames: Số frame thêm trước/sau mỗi hit
+            base_url: URL cơ sở cho file paths
 
-            # Phân tích từng cú đánh
+        Returns:
+            Dict {player_id: {"video_path": path, "hit_count": count, ...}}
+        """
+        os.makedirs(output_folder, exist_ok=True)
+        highlight_results = {}
+
+        for person_id, hits in self.ball_hits_by_person.items():
+            if len(hits) == 0:
+                continue
+
+            # Thu thập tất cả frame indices cần cho highlight
+            highlight_frames_set = set()
+
             for hit in hits:
-                pose = hit["pose"]
-                ball_pos = hit["ball_pos"]
-                frame_idx = hit["frame"]
+                hit_frame = hit["frame"]
+                # Thêm frames xung quanh mỗi hit
+                start_frame = max(0, hit_frame - padding_frames)
+                end_frame = min(len(frames), hit_frame + padding_frames + 1)
 
-                # Kiểm tra trong/ngoài sân
-                is_in_court = self._is_ball_in_court(ball_pos, court_bounds)
+                for f in range(start_frame, end_frame):
+                    highlight_frames_set.add(f)
 
-                hit_detail = {
-                    "frame": frame_idx,
-                    "ball_pos": ball_pos,
-                    "is_in_court": is_in_court,
-                    "pose_analysis": {},
-                    "technique_errors": [],
-                }
+            # Chuyển thành list và sort
+            highlight_frame_indices = sorted(list(highlight_frames_set))
 
-                if pose is not None:
-                    # Phân tích pose
-                    pose_analysis = self._analyze_pose(pose, ball_pos, court_bounds)
-                    hit_detail["pose_analysis"] = pose_analysis
+            if len(highlight_frame_indices) < min_frames:
+                continue
 
-                    # Kiểm tra lỗi kỹ thuật
-                    errors = self._detect_technique_errors(pose, ball_pos, court_bounds)
-                    person_stats["technique_errors"].extend(errors)
-                    hit_detail["technique_errors"] = errors
+            # Tạo video highlight
+            output_path = os.path.join(output_folder, f"player_{person_id}_highlight.mp4")
 
-                    # Đếm trong/ngoài sân
-                    if is_in_court:
-                        person_stats["hits_in_court"] += 1
-                    else:
-                        person_stats["hits_out_court"] += 1
-                else:
-                    # Nếu không có pose, vẫn đếm trong/ngoài sân
-                    if is_in_court:
-                        person_stats["hits_in_court"] += 1
-                    else:
-                        person_stats["hits_out_court"] += 1
+            # Lấy kích thước từ frame đầu tiên
+            first_frame = frames[highlight_frame_indices[0]]
+            height, width = first_frame.shape[:2]
 
-                person_stats["hit_details"].append(hit_detail)
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-            # Tính tỷ lệ chính xác
-            total_hits = person_stats["hits_in_court"] + person_stats["hits_out_court"]
-            if total_hits > 0:
-                person_stats["accuracy_percentage"] = (
-                    person_stats["hits_in_court"] / total_hits
-                ) * 100
-            else:
-                person_stats["accuracy_percentage"] = 0
+            try:
+                for frame_idx in highlight_frame_indices:
+                    frame = frames[frame_idx].copy()
 
-            technique_analysis["person_stats"][person_id] = person_stats
+                    # Vẽ bbox của player lên frame
+                    for pos_data in self.player_positions.get(person_id, []):
+                        if pos_data[0] == frame_idx:
+                            # Tìm bbox tại frame này
+                            if person_id in self.tracked_persons:
+                                bbox = None
+                                # Tìm trong hits
+                                for hit in hits:
+                                    if hit["frame"] == frame_idx:
+                                        bbox = hit["person_bbox"]
+                                        break
 
-        # Tính thống kê tổng hợp
-        technique_analysis["court_accuracy"] = self._calculate_court_accuracy_summary(
-            technique_analysis["person_stats"]
-        )
+                                if bbox:
+                                    x1, y1, x2, y2 = bbox
+                                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                    cv2.putText(
+                                        frame,
+                                        f"Player {person_id}",
+                                        (x1, y1 - 10),
+                                        cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.7,
+                                        (0, 255, 0),
+                                        2
+                                    )
+                            break
 
-        return technique_analysis
+                    # Đánh dấu frame hit
+                    for hit in hits:
+                        if hit["frame"] == frame_idx:
+                            # Vẽ circle tại vị trí bóng
+                            ball_pos = hit["ball_pos"]
+                            cv2.circle(
+                                frame,
+                                (int(ball_pos[0]), int(ball_pos[1])),
+                                15,
+                                (0, 0, 255),
+                                3
+                            )
+                            cv2.putText(
+                                frame,
+                                "HIT!",
+                                (int(ball_pos[0]) + 20, int(ball_pos[1])),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                1,
+                                (0, 0, 255),
+                                2
+                            )
+                            break
 
-    def _calculate_court_accuracy_summary(self, person_stats):
-        """Tính thống kê tổng hợp về độ chính xác"""
-        # Lọc bỏ những người không có cú đánh nào
-        active_persons = {
-            pid: stats for pid, stats in person_stats.items() if stats["total_hits"] > 0
-        }
+                    out.write(frame)
 
-        total_in_court = sum(
-            stats["hits_in_court"] for stats in active_persons.values()
-        )
-        total_out_court = sum(
-            stats["hits_out_court"] for stats in active_persons.values()
-        )
-        total_hits = total_in_court + total_out_court
+            finally:
+                out.release()
 
-        summary = {
-            "total_in_court": total_in_court,
-            "total_out_court": total_out_court,
-            "total_hits": total_hits,
-            "overall_accuracy": (
-                (total_in_court / total_hits * 100) if total_hits > 0 else 0
-            ),
-            "by_person": {},
-            "active_persons_count": len(active_persons),
-            "total_persons_count": len(person_stats),
-        }
-
-        for person_id, stats in active_persons.items():
-            summary["by_person"][person_id] = {
-                "hits_in_court": stats["hits_in_court"],
-                "hits_out_court": stats["hits_out_court"],
-                "total_hits": stats["total_hits"],
-                "accuracy_percentage": stats["accuracy_percentage"],
+            # Thông tin highlight
+            highlight_results[person_id] = {
+                "video_path": f"{base_url}/player_{person_id}_highlight.mp4" if base_url else output_path,
+                "hit_count": len(hits),
+                "total_frames": len(highlight_frame_indices),
+                "duration_seconds": round(len(highlight_frame_indices) / fps, 2),
+                "hits": [
+                    {
+                        "frame": h["frame"],
+                        "ball_pos": h["ball_pos"]
+                    }
+                    for h in hits
+                ]
             }
 
-        return summary
+        return highlight_results
 
-    def _analyze_pose(self, pose, ball_pos, court_bounds):
-        """Phân tích pose để xác định tư thế đánh bóng"""
-        if pose is None:
-            return {}
+    def create_combined_highlight_video(
+        self,
+        frames,
+        ball_positions,
+        output_path,
+        fps=30,
+        padding_frames=30
+    ):
+        """Tạo video highlight tổng hợp tất cả các cú đánh
 
-        keypoints = pose["keypoints"]
-        conf = pose["conf"]
+        Args:
+            frames: List of all video frames
+            ball_positions: Ball positions for each frame
+            output_path: Đường dẫn file output
+            fps: FPS của video output
+            padding_frames: Số frame thêm trước/sau mỗi hit
 
-        analysis = {}
-        valid_keypoints = conf > 0.5
+        Returns:
+            Dict với thông tin video
+        """
+        # Thu thập tất cả hits từ tất cả players
+        all_hits = []
+        for person_id, hits in self.ball_hits_by_person.items():
+            for hit in hits:
+                all_hits.append({
+                    **hit,
+                    "person_id": person_id
+                })
 
-        if valid_keypoints[5] and valid_keypoints[6]:  # Shoulders
-            left_shoulder = keypoints[5]
-            right_shoulder = keypoints[6]
-            shoulder_angle = self._calculate_angle(
-                left_shoulder, right_shoulder, ball_pos
-            )
-            analysis["shoulder_angle"] = shoulder_angle
+        # Sort theo frame
+        all_hits.sort(key=lambda x: x["frame"])
 
-        if valid_keypoints[13] and valid_keypoints[14]:  # Knees
-            left_knee = keypoints[13]
-            right_knee = keypoints[14]
-            knee_bend = self._calculate_knee_bend(left_knee, right_knee)
-            analysis["knee_bend"] = knee_bend
+        if len(all_hits) == 0:
+            return None
 
-        if valid_keypoints[9] and valid_keypoints[10]:  # Wrists
-            left_wrist = keypoints[9]
-            right_wrist = keypoints[10]
-            racket_position = self._estimate_racket_position(
-                left_wrist, right_wrist, ball_pos
-            )
-            analysis["racket_position"] = racket_position
+        # Thu thập frame indices
+        highlight_frames_set = set()
+        for hit in all_hits:
+            hit_frame = hit["frame"]
+            start_frame = max(0, hit_frame - padding_frames)
+            end_frame = min(len(frames), hit_frame + padding_frames + 1)
+            for f in range(start_frame, end_frame):
+                highlight_frames_set.add(f)
 
-        return analysis
+        highlight_frame_indices = sorted(list(highlight_frames_set))
 
-    def _detect_technique_errors(self, pose, ball_pos, court_bounds):
-        """Phát hiện lỗi kỹ thuật tennis"""
-        errors = []
+        # Tạo video
+        first_frame = frames[highlight_frame_indices[0]]
+        height, width = first_frame.shape[:2]
 
-        if pose is None:
-            return errors
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
-        keypoints = pose["keypoints"]
-        conf = pose["conf"]
+        try:
+            for frame_idx in highlight_frame_indices:
+                frame = frames[frame_idx].copy()
 
-        # 1. Kiểm tra khụy gối (knee bend)
-        if conf[13] > 0.5 and conf[14] > 0.5:  # Knees
-            left_knee = keypoints[13]
-            right_knee = keypoints[14]
-            knee_bend = self._calculate_knee_bend(left_knee, right_knee)
+                # Vẽ bóng
+                if frame_idx < len(ball_positions) and ball_positions[frame_idx] != (-1, -1):
+                    ball_pos = ball_positions[frame_idx]
+                    cv2.circle(
+                        frame,
+                        (int(ball_pos[0]), int(ball_pos[1])),
+                        8,
+                        (0, 255, 255),
+                        -1
+                    )
 
-            if knee_bend < 120:  # Góc khụy gối quá nhỏ
-                errors.append(
-                    {
-                        "type": "insufficient_knee_bend",
-                        "description": "Khụy gối không đủ sâu",
-                        "severity": "medium",
-                    }
-                )
+                # Đánh dấu hits
+                for hit in all_hits:
+                    if hit["frame"] == frame_idx:
+                        ball_pos = hit["ball_pos"]
+                        person_id = hit["person_id"]
 
-        # 2. Kiểm tra vị trí chân (foot position)
-        if conf[15] > 0.5 and conf[16] > 0.5:  # Ankles
-            left_ankle = keypoints[15]
-            right_ankle = keypoints[16]
+                        # Vẽ marker hit
+                        cv2.circle(
+                            frame,
+                            (int(ball_pos[0]), int(ball_pos[1])),
+                            20,
+                            (0, 0, 255),
+                            3
+                        )
+                        cv2.putText(
+                            frame,
+                            f"P{person_id} HIT!",
+                            (int(ball_pos[0]) + 25, int(ball_pos[1])),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.8,
+                            (0, 0, 255),
+                            2
+                        )
 
-            # Kiểm tra dẫm vạch
-            if self._is_stepping_on_line(left_ankle, right_ankle, court_bounds):
-                errors.append(
-                    {
-                        "type": "stepping_on_line",
-                        "description": "Dẫm vạch khi đánh bóng",
-                        "severity": "high",
-                    }
-                )
+                out.write(frame)
 
-        # 3. Kiểm tra tư thế sau khi đánh bóng
-        if conf[5] > 0.5 and conf[6] > 0.5:  # Shoulders
-            left_shoulder = keypoints[5]
-            right_shoulder = keypoints[6]
+        finally:
+            out.release()
 
-            # Kiểm tra follow-through
-            follow_through = self._check_follow_through(
-                left_shoulder, right_shoulder, ball_pos
-            )
-            if not follow_through:
-                errors.append(
-                    {
-                        "type": "poor_follow_through",
-                        "description": "Tư thế sau khi đánh bóng không tốt",
-                        "severity": "low",
-                    }
-                )
+        return {
+            "total_hits": len(all_hits),
+            "total_frames": len(highlight_frame_indices),
+            "duration_seconds": round(len(highlight_frame_indices) / fps, 2),
+            "players_involved": list(set(h["person_id"] for h in all_hits))
+        }
 
-        return errors
-
-    def _calculate_angle(self, p1, p2, p3):
-        """Tính góc giữa 3 điểm"""
-        v1 = p1 - p3
-        v2 = p2 - p3
-
-        cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-        cos_angle = np.clip(cos_angle, -1.0, 1.0)
-
-        return np.arccos(cos_angle) * 180 / np.pi
-
-    def _calculate_knee_bend(self, left_knee, right_knee):
-        """Tính góc khụy gối"""
-        return self._calculate_angle(
-            left_knee, right_knee, (left_knee + right_knee) / 2
-        )
-
-    def _estimate_racket_position(self, left_wrist, right_wrist, ball_pos):
-        """Ước tính vị trí vợt dựa trên vị trí cổ tay"""
-        wrist_center = (left_wrist + right_wrist) / 2
-        distance_to_ball = np.linalg.norm(wrist_center - ball_pos)
-        return distance_to_ball
-
-    def _is_ball_in_court(self, ball_pos, court_bounds):
-        """Kiểm tra bóng có trong sân không"""
-        x, y = ball_pos
-        x1, y1, x2, y2 = court_bounds
-        return x1 <= x <= x2 and y1 <= y <= y2
-
-    def _is_stepping_on_line(self, left_ankle, right_ankle, court_bounds):
-        """Kiểm tra có dẫm vạch không"""
-        x1, y1, x2, y2 = court_bounds
-
-        # Kiểm tra vạch ngang (net)
-        net_y = (y1 + y2) / 2
-        if abs(left_ankle[1] - net_y) < 20 or abs(right_ankle[1] - net_y) < 20:
-            return True
-
-        # Kiểm tra vạch dọc
-        if abs(left_ankle[0] - x1) < 20 or abs(left_ankle[0] - x2) < 20:
-            return True
-        if abs(right_ankle[0] - x1) < 20 or abs(right_ankle[0] - x2) < 20:
-            return True
-
-        return False
-
-    def _check_follow_through(self, left_shoulder, right_shoulder, ball_pos):
-        """Kiểm tra follow-through sau khi đánh bóng"""
-        shoulder_center = (left_shoulder + right_shoulder) / 2
-        distance = np.linalg.norm(shoulder_center - ball_pos)
-        return distance < 100  # Threshold
-
-    def get_person_statistics(self):
-        """Lấy thống kê tổng hợp về người chơi"""
+    def get_person_stats(self):
+        """Lấy thống kê tracking người"""
         stats = {}
-
         for person_id, person_data in self.tracked_persons.items():
-            hits = self.ball_hits_by_person[person_id]
-
             stats[person_id] = {
-                "total_frames": person_data["frame_count"],
-                "total_hits": len(hits),
-                "hit_rate": (
-                    len(hits) / person_data["frame_count"]
-                    if person_data["frame_count"] > 0
-                    else 0
-                ),
                 "first_seen": person_data["first_seen"],
                 "last_seen": person_data["last_seen"],
+                "frame_count": person_data["frame_count"],
+                "total_hits": len(self.ball_hits_by_person[person_id]),
             }
-
         return stats
-
-    def get_player_positions(self):
-        """Lấy vị trí người chơi theo thời gian cho heatmap - NEW"""
-        return dict(self.player_positions)
