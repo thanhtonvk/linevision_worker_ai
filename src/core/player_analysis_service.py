@@ -101,9 +101,24 @@ class PlayerAnalysisService:
         cap.release()
         timings["read_video"] = time.time() - step_start
 
-        # 2. Detect bóng
+        # 2. Detect bóng + Nội suy vị trí bị miss
         step_start = time.time()
-        ball_positions = self.ball_detector.detect_positions(frames)
+        raw_ball_positions = self.ball_detector.detect_positions(frames)
+
+        # Đếm số frame bị miss trước khi nội suy
+        missed_before = sum(1 for p in raw_ball_positions if p == (-1, -1))
+
+        # Nội suy với parabol để fill các gaps (max 15 frames)
+        ball_positions = self.ball_detector.interpolate_missing_positions(
+            raw_ball_positions, max_gap=15, use_parabolic=True
+        )
+
+        # Smooth để giảm nhiễu
+        ball_positions = self.ball_detector.smooth_positions(ball_positions, window_size=5)
+
+        # Đếm số frame bị miss sau khi nội suy
+        missed_after = sum(1 for p in ball_positions if p == (-1, -1))
+
         timings["ball_detection"] = time.time() - step_start
 
         # 3. Person & Pose Detection (chỉ chạy 1 lần với pose model)
@@ -249,6 +264,15 @@ class PlayerAnalysisService:
                 "fps": fps,
                 "total_frames": len(frames),
                 "duration_seconds": round(len(frames) / fps, 2) if fps > 0 else 0
+            },
+            "ball_tracking": {
+                "total_frames": len(frames),
+                "detected_frames": len(frames) - missed_before,
+                "missed_frames_before_interpolation": missed_before,
+                "missed_frames_after_interpolation": missed_after,
+                "interpolated_frames": missed_before - missed_after,
+                "detection_rate": round((len(frames) - missed_before) / len(frames) * 100, 1) if len(frames) > 0 else 0,
+                "coverage_after_interpolation": round((len(frames) - missed_after) / len(frames) * 100, 1) if len(frames) > 0 else 0
             },
             "court_info": {
                 "points": court_points,

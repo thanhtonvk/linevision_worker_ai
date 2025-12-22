@@ -19,7 +19,7 @@ class PersonTracker:
 
     def __init__(
         self,
-        pose_model_path="src/models/yolov8n-pose.pt",
+        pose_model_path="src/models/yolov8m-pose.pt",  # Medium model for better accuracy
         batch_size=16,  # Optimized for 12GB GPU
     ):
         # Chỉ sử dụng pose model - nó trả về cả bbox và keypoints

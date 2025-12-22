@@ -180,41 +180,157 @@ class BallDetector:
 
         return smoothed
 
-    def interpolate_missing_positions(self, positions, max_gap=10):
-        """Nội suy vị trí bóng bị thiếu"""
-        interpolated = []
-        i = 0
+    def interpolate_missing_positions(self, positions, max_gap=15, use_parabolic=True):
+        """Nội suy vị trí bóng bị thiếu với hỗ trợ nội suy parabol
 
+        Args:
+            positions: List of (x, y) positions
+            max_gap: Số frame tối đa cho phép nội suy
+            use_parabolic: Sử dụng nội suy parabol (tốt hơn cho quỹ đạo bóng)
+
+        Returns:
+            List of interpolated positions
+        """
+        if not positions:
+            return positions
+
+        interpolated = list(positions)  # Copy để không ảnh hưởng original
+
+        # Tìm tất cả các gaps
+        gaps = []
+        i = 0
         while i < len(positions):
-            if positions[i] != (-1, -1):
-                interpolated.append(positions[i])
-                i += 1
-            else:
-                # Tìm vị trí bắt đầu và kết thúc của gap
+            if positions[i] == (-1, -1):
                 start_idx = i
                 while i < len(positions) and positions[i] == (-1, -1):
                     i += 1
                 end_idx = i
-                gap_size = end_idx - start_idx
+                gaps.append((start_idx, end_idx))
+            else:
+                i += 1
 
-                if gap_size <= max_gap and start_idx > 0 and end_idx < len(positions):
-                    # Nội suy
-                    prev_pos = interpolated[-1]
-                    next_pos = (
-                        positions[end_idx] if end_idx < len(positions) else prev_pos
-                    )
+        # Nội suy từng gap
+        for start_idx, end_idx in gaps:
+            gap_size = end_idx - start_idx
 
-                    for j in range(gap_size):
-                        ratio = (j + 1) / (gap_size + 1)
-                        x = prev_pos[0] + ratio * (next_pos[0] - prev_pos[0])
-                        y = prev_pos[1] + ratio * (next_pos[1] - prev_pos[1])
-                        interpolated.append((x, y))
-                else:
-                    # Không nội suy, giữ nguyên
-                    for j in range(gap_size):
-                        interpolated.append((-1, -1))
+            if gap_size > max_gap:
+                continue  # Gap quá lớn, không nội suy
+
+            # Tìm điểm trước và sau gap
+            prev_idx = start_idx - 1
+            next_idx = end_idx
+
+            if prev_idx < 0 or next_idx >= len(positions):
+                continue  # Không đủ điểm để nội suy
+
+            prev_pos = positions[prev_idx]
+            next_pos = positions[next_idx]
+
+            if prev_pos == (-1, -1) or next_pos == (-1, -1):
+                continue
+
+            if use_parabolic and gap_size > 2:
+                # Nội suy parabol - cần thêm điểm để ước lượng quỹ đạo
+                interpolated_points = self._parabolic_interpolation(
+                    positions, prev_idx, next_idx, gap_size
+                )
+            else:
+                # Nội suy tuyến tính cho gap nhỏ
+                interpolated_points = self._linear_interpolation(
+                    prev_pos, next_pos, gap_size
+                )
+
+            # Ghi các điểm nội suy
+            for j, point in enumerate(interpolated_points):
+                interpolated[start_idx + j] = point
 
         return interpolated
+
+    def _linear_interpolation(self, prev_pos, next_pos, gap_size):
+        """Nội suy tuyến tính đơn giản"""
+        points = []
+        for j in range(gap_size):
+            ratio = (j + 1) / (gap_size + 1)
+            x = prev_pos[0] + ratio * (next_pos[0] - prev_pos[0])
+            y = prev_pos[1] + ratio * (next_pos[1] - prev_pos[1])
+            points.append((x, y))
+        return points
+
+    def _parabolic_interpolation(self, positions, prev_idx, next_idx, gap_size):
+        """Nội suy parabol cho quỹ đạo bóng tự nhiên hơn
+
+        Sử dụng các điểm xung quanh để ước lượng quỹ đạo parabol
+        """
+        # Thu thập các điểm valid xung quanh gap
+        context_points = []
+        context_indices = []
+
+        # Lấy 3 điểm trước gap
+        for i in range(prev_idx, max(-1, prev_idx - 4), -1):
+            if positions[i] != (-1, -1):
+                context_points.insert(0, positions[i])
+                context_indices.insert(0, i)
+                if len([p for p in context_points if context_indices[context_points.index(p)] <= prev_idx]) >= 3:
+                    break
+
+        # Lấy 3 điểm sau gap
+        for i in range(next_idx, min(len(positions), next_idx + 4)):
+            if positions[i] != (-1, -1):
+                context_points.append(positions[i])
+                context_indices.append(i)
+                if len([p for p in context_points if context_indices[context_points.index(p)] >= next_idx]) >= 3:
+                    break
+
+        # Cần ít nhất 3 điểm để fit parabol
+        if len(context_points) < 3:
+            return self._linear_interpolation(positions[prev_idx], positions[next_idx], gap_size)
+
+        # Fit parabol riêng cho x và y theo thời gian (frame index)
+        try:
+            x_coords = [p[0] for p in context_points]
+            y_coords = [p[1] for p in context_points]
+            t_coords = context_indices
+
+            # Fit polynomial bậc 2 cho x(t) và y(t)
+            # x thường tuyến tính, y có thể parabol do trọng lực
+            x_coeffs = np.polyfit(t_coords, x_coords, min(2, len(context_points) - 1))
+            y_coeffs = np.polyfit(t_coords, y_coords, min(2, len(context_points) - 1))
+
+            # Tính các điểm nội suy
+            points = []
+            for j in range(gap_size):
+                t = prev_idx + j + 1
+                x = np.polyval(x_coeffs, t)
+                y = np.polyval(y_coeffs, t)
+                points.append((float(x), float(y)))
+
+            return points
+
+        except Exception:
+            # Fallback về linear nếu fit thất bại
+            return self._linear_interpolation(positions[prev_idx], positions[next_idx], gap_size)
+
+    def process_ball_positions(self, frames, max_gap=15, smooth_window=5):
+        """Pipeline đầy đủ: detect -> interpolate -> smooth
+
+        Args:
+            frames: List of video frames
+            max_gap: Max gap for interpolation
+            smooth_window: Window size for smoothing
+
+        Returns:
+            Processed ball positions
+        """
+        # 1. Detect
+        positions = self.detect_positions(frames)
+
+        # 2. Interpolate missing
+        positions = self.interpolate_missing_positions(positions, max_gap=max_gap)
+
+        # 3. Smooth
+        positions = self.smooth_positions(positions, window_size=smooth_window)
+
+        return positions
 
     def detect_persons(self, frames, person_conf=0.5):
         """Detect người trong frames với batch inference
