@@ -224,8 +224,7 @@ class StatsVisualizer:
 
         # Convert to numpy array
         fig.canvas.draw()
-        img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        img = np.array(fig.canvas.buffer_rgba())[:, :, :3]
 
         plt.close(fig)
         return img
@@ -302,8 +301,7 @@ class StatsVisualizer:
 
         # Convert to numpy array
         fig.canvas.draw()
-        img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        img = np.array(fig.canvas.buffer_rgba())[:, :, :3]
 
         plt.close(fig)
         return img
@@ -364,8 +362,7 @@ class StatsVisualizer:
 
         # Convert to numpy array
         fig.canvas.draw()
-        img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        img = np.array(fig.canvas.buffer_rgba())[:, :, :3]
 
         plt.close(fig)
         return img
@@ -417,8 +414,7 @@ class StatsVisualizer:
 
         # Convert to numpy array
         fig.canvas.draw()
-        img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        img = np.array(fig.canvas.buffer_rgba())[:, :, :3]
 
         plt.close(fig)
         return img
