@@ -31,7 +31,7 @@ class BallDetector:
     def __init__(
         self,
         model_path="models/ball_best.pt",
-        person_model_path="yolo12m.pt",  # Changed to nano
+        person_model_path="yolo11m.pt",  # Changed to nano
         batch_size=16,  # Optimized for 12GB GPU
     ):
         self.model = YOLO(model_path)
