@@ -33,7 +33,7 @@ class BallDetector:
         person_model_path="src/models/yolov8n.pt",  # Changed to nano
     ):
         self.model = YOLO(model_path)
-        # self.person_model = YOLO(person_model_path)
+        self.person_model = YOLO(person_model_path)
         self.batch_size = 2  # Reduced for faster processing
         self.conf = 0.7
 
