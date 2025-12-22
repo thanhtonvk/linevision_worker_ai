@@ -26,6 +26,7 @@ class PersonTracker:
         self.tracked_persons = {}  # {person_id: person_data}
         self.next_person_id = 1
         self.ball_hits_by_person = defaultdict(list)  # {person_id: [hit_data]}
+        self.player_positions = defaultdict(list)  # {player_id: [(frame, x, y), ...]} - NEW
         self.max_frame_height = settings.max_frame_height
         self.enable_frame_resize = settings.enable_frame_resize
 
@@ -238,6 +239,12 @@ class PersonTracker:
             tracked_data.append(
                 {"person_id": person_id, "person": person, "pose": pose}
             )
+
+            # Lưu vị trí người chơi cho heatmap - NEW
+            x1, y1, x2, y2 = person["bbox"]
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            self.player_positions[person_id].append((frame_idx, center_x, center_y))
 
         return tracked_data
 
@@ -569,3 +576,7 @@ class PersonTracker:
             }
 
         return stats
+
+    def get_player_positions(self):
+        """Lấy vị trí người chơi theo thời gian cho heatmap - NEW"""
+        return dict(self.player_positions)

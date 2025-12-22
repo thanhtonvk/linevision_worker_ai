@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify, send_from_directory, url_for
 from werkzeug.utils import secure_filename
 from src.core.tennis_analysis_module import TennisAnalysisModule
 from src.core.var_detector import VarDetector
+from src.core.player_analysis_service import PlayerAnalysisService
 from config.settings import settings
 import cv2
 import os
@@ -28,6 +29,13 @@ analyzer = TennisAnalysisModule(
 
 # Initialize VAR Detector
 var_detector = VarDetector(model_path=settings.ball_model_path, conf=0.8, batch_size=32)
+
+# Initialize Player Analysis Service
+player_analysis_service = PlayerAnalysisService(
+    ball_model_path=settings.ball_model_path,
+    person_model_path=settings.person_model_path,
+    pose_model_path=settings.pose_model_path
+)
 
 
 # =============================================================================
@@ -408,6 +416,118 @@ def check_var():
 
     except Exception as e:
         # Nếu có lỗi, vẫn cố gắng xóa video đã upload ngay lập tức
+        try:
+            if "video_path" in locals() and os.path.exists(video_path):
+                os.remove(video_path)
+                print(f"[CLEANUP] Deleted uploaded video after error: {video_path}")
+        except:
+            pass
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@api_bp.route("/api/player-analysis", methods=["POST"])
+def player_analysis():
+    """
+    Endpoint phân tích chi tiết người chơi tennis với 8 chỉ số
+
+    Parameters (form-data):
+        - video: Video file (required)
+        - court_points: JSON string của 12 điểm tọa độ sân (required)
+          Ví dụ: "[[361,139],[481,132],[560,130],[664,131],[981,153],[887,338],[714,641],[372,457],[288,408],[244,372],[169,324],[270,224]]"
+        - net_start_idx: Index điểm bắt đầu lưới (default: 2)
+        - net_end_idx: Index điểm kết thúc lưới (default: 8)
+        - ball_conf: Ball detection confidence (default: 0.7)
+        - person_conf: Person detection confidence (default: 0.6)
+        - angle_threshold: Angle threshold (default: 50)
+        - intersection_threshold: Intersection threshold (default: 100)
+
+    Returns:
+        JSON với 8 chỉ số phân tích và links đến hình ảnh/video
+    """
+    import json
+
+    try:
+        # Kiểm tra file có được upload không
+        if "video" not in request.files:
+            return jsonify({"error": "No video file provided"}), 400
+
+        file = request.files["video"]
+
+        if file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
+
+        if not allowed_file(file.filename):
+            return jsonify({
+                "error": f"Invalid file type. Allowed: {settings.allowed_extensions}"
+            }), 400
+
+        # Kiểm tra court_points
+        court_points_str = request.form.get("court_points")
+        if not court_points_str:
+            return jsonify({"error": "court_points is required"}), 400
+
+        try:
+            court_points = json.loads(court_points_str)
+            court_points = [tuple(p) for p in court_points]
+            if len(court_points) != 12:
+                return jsonify({"error": "court_points must have exactly 12 points"}), 400
+        except json.JSONDecodeError:
+            return jsonify({"error": "Invalid court_points JSON format"}), 400
+
+        # Lưu video upload
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4().hex}_{filename}"
+        video_path = os.path.join(settings.upload_folder, unique_filename)
+        file.save(video_path)
+
+        # Tạo thư mục output riêng cho request này
+        request_id = uuid.uuid4().hex
+        request_output_folder = os.path.join(settings.output_folder, request_id)
+        os.makedirs(request_output_folder, exist_ok=True)
+
+        # Lấy parameters từ request
+        net_start_idx = int(request.form.get("net_start_idx", 2))
+        net_end_idx = int(request.form.get("net_end_idx", 8))
+        ball_conf = float(request.form.get("ball_conf", settings.default_ball_conf))
+        person_conf = float(request.form.get("person_conf", settings.default_person_conf))
+        angle_threshold = float(request.form.get("angle_threshold", settings.default_angle_threshold))
+        intersection_threshold = float(request.form.get("intersection_threshold", settings.default_intersection_threshold))
+
+        # Base URL cho files (dạng: outputs/request_id)
+        base_url = f"outputs/{request_id}"
+
+        # Phân tích video
+        result = player_analysis_service.analyze(
+            video_path=video_path,
+            court_points=court_points,
+            output_folder=request_output_folder,
+            net_start_idx=net_start_idx,
+            net_end_idx=net_end_idx,
+            ball_conf=ball_conf,
+            person_conf=person_conf,
+            angle_threshold=angle_threshold,
+            intersection_threshold=intersection_threshold,
+            base_url=base_url
+        )
+
+        # Thêm request_id và expires_at
+        result["request_id"] = request_id
+        result["expires_at"] = (
+            datetime.now() + timedelta(hours=settings.cleanup_hours)
+        ).isoformat()
+
+        # Xóa video upload ngay sau khi xử lý xong
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                print(f"[CLEANUP] Deleted uploaded video immediately: {video_path}")
+        except Exception as cleanup_error:
+            print(f"[CLEANUP ERROR] Failed to delete {video_path}: {cleanup_error}")
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        # Nếu có lỗi, vẫn cố gắng xóa video đã upload
         try:
             if "video_path" in locals() and os.path.exists(video_path):
                 os.remove(video_path)
