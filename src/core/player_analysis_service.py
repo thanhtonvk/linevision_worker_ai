@@ -184,40 +184,17 @@ class PlayerAnalysisService:
         rankings = stats_analyzer.calculate_player_ranking()
         timings["stats_analysis"] = time.time() - step_start
 
-        # 7. Tạo visualization
+        # 7. Tạo visualization (chỉ heatmap và player image)
         step_start = time.time()
         visualizer = StatsVisualizer(court_points=court_points)
         court_image = frames[0].copy() if frames else None
 
         output_files = {}
 
-        # Ranking board
-        ranking_path = os.path.join(output_folder, "ranking_board.png")
-        visualizer.create_ranking_board(rankings, output_path=ranking_path)
-        output_files["ranking_board"] = f"{base_url}/ranking_board.png"
-
-        # Speed comparison
-        serve_speeds = {}
-        drive_speeds = {}
-        for player_id, stats in all_stats.items():
-            serve = stats.get("serve", {})
-            drive = stats.get("drive", {})
-            serve_speeds[player_id] = serve.get("speeds", [])
-            drive_speeds[player_id] = drive.get("speeds", [])
-
-        speed_path = os.path.join(output_folder, "speed_comparison.png")
-        visualizer.create_speed_chart(serve_speeds, drive_speeds, output_path=speed_path)
-        output_files["speed_comparison"] = f"{base_url}/speed_comparison.png"
-
-        # Per-player outputs
+        # Per-player outputs (chỉ heatmap và player image)
         player_images = {}
         for player_id, stats in all_stats.items():
             player_output = {}
-
-            # Stats table
-            stats_path = os.path.join(output_folder, f"player_{player_id}_stats.png")
-            visualizer.create_stats_table(stats, output_path=stats_path)
-            player_output["stats_table"] = f"{base_url}/player_{player_id}_stats.png"
 
             # Heatmap
             positions = stats.get("heatmap_positions", [])
@@ -230,13 +207,6 @@ class PlayerAnalysisService:
                     player_id=player_id
                 )
                 player_output["heatmap"] = f"{base_url}/player_{player_id}_heatmap.png"
-
-            # Shot density pie
-            density = stats.get("shot_density", {})
-            if density and density.get("counts"):
-                density_path = os.path.join(output_folder, f"player_{player_id}_density.png")
-                visualizer.create_shot_density_pie(density, player_id, output_path=density_path)
-                player_output["shot_density_chart"] = f"{base_url}/player_{player_id}_density.png"
 
             # Player crop image
             if player_id in self.person_tracker.tracked_persons:
