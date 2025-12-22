@@ -25,17 +25,25 @@ def gpu_memory_full(threshold_ratio: float = 0.85):
 class BallDetector:
     """
     Class để detect và track bóng tennis trong video
+    Optimized for 12GB GPU with batch inference
     """
 
     def __init__(
         self,
         model_path="src/models/ball_best.pt",
         person_model_path="src/models/yolov8n.pt",  # Changed to nano
+        batch_size=16,  # Optimized for 12GB GPU
     ):
         self.model = YOLO(model_path)
         self.person_model = YOLO(person_model_path)
-        self.batch_size = 2  # Reduced for faster processing
+        self.model_path = model_path
+        self.batch_size = batch_size  # Increased for faster processing with 12GB GPU
         self.conf = 0.7
+
+        # Enable half precision for faster inference
+        if torch.cuda.is_available():
+            self.model.to('cuda')
+            self.person_model.to('cuda')
 
     def read_video(self, video_path):
         """Đọc video và trả về danh sách frames"""
@@ -73,23 +81,52 @@ class BallDetector:
             for i in range(0, len(frames), self.batch_size)
         ]
 
-    def detect_positions(self, frames):
-        """Detect vị trí bóng trong các frames"""
+    def detect_positions(self, frames, show_progress=True):
+        """Detect vị trí bóng trong các frames với batch inference
+
+        Args:
+            frames: List of video frames
+            show_progress: Show progress during inference
+
+        Returns:
+            List of (x, y) positions for each frame
+        """
         batches = self.batch_frames(frames)
         positions = []
-        for batch in batches:
+        total_batches = len(batches)
+
+        if show_progress:
+            print(f"🎾 Ball detection: {len(frames)} frames, {total_batches} batches (batch_size={self.batch_size})")
+
+        for batch_idx, batch in enumerate(batches):
             if gpu_memory_full():
                 self.reset_model()
+
+            # Batch inference with half precision
             results = self.model.predict(
-                batch, batch=self.batch_size, verbose=False, conf=self.conf
+                batch,
+                batch=len(batch),  # Use actual batch size
+                verbose=False,
+                conf=self.conf,
+                half=True  # Enable FP16 for faster inference
             )
+
             for res in results:
                 if res.boxes is not None and len(res.boxes) > 0:
                     best_idx = res.boxes.conf.argmax()
                     x, y, w, h = res.boxes.xywh[best_idx].cpu().numpy()
-                    positions.append((x, y))
+                    positions.append((float(x), float(y)))
                 else:
                     positions.append((-1, -1))
+
+            if show_progress and (batch_idx + 1) % 10 == 0:
+                progress = (batch_idx + 1) / total_batches * 100
+                print(f"   Batch {batch_idx + 1}/{total_batches} ({progress:.1f}%)")
+
+        if show_progress:
+            detected = sum(1 for p in positions if p != (-1, -1))
+            print(f"✅ Detected {detected}/{len(positions)} ball positions")
+
         return positions
 
     def correct_positions(self, positions):
@@ -196,22 +233,44 @@ class BallDetector:
 
         return interpolated
 
-    def detect_persons(self, frames, person_conf=0.5):
-        """Detect người trong frames"""
+    def detect_persons(self, frames, person_conf=0.5, show_progress=True):
+        """Detect người trong frames với batch inference
+
+        Args:
+            frames: List of video frames
+            person_conf: Confidence threshold for person detection
+            show_progress: Show progress during inference
+
+        Returns:
+            List of person detections for each frame
+        """
         batches = self.batch_frames(frames)
         person_detections = []
+        total_batches = len(batches)
 
-        for batch in batches:
+        if show_progress:
+            print(f"👥 Person detection: {len(frames)} frames, {total_batches} batches")
+
+        for batch_idx, batch in enumerate(batches):
+            if gpu_memory_full():
+                torch.cuda.empty_cache()
+                gc.collect()
+
             results = self.person_model.predict(
-                batch, batch=self.batch_size, verbose=False, conf=person_conf
+                batch,
+                batch=len(batch),  # Use actual batch size
+                verbose=False,
+                conf=person_conf,
+                half=True  # Enable FP16
             )
+
             for res in results:
                 frame_persons = []
                 if res.boxes is not None and len(res.boxes) > 0:
                     for box in res.boxes:
                         if int(box.cls) == 0:  # person class
                             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                            conf = box.conf.cpu().numpy()[0]
+                            conf = float(box.conf.cpu().numpy()[0])
                             if conf >= person_conf:
                                 frame_persons.append(
                                     {
@@ -220,6 +279,14 @@ class BallDetector:
                                     }
                                 )
                 person_detections.append(frame_persons)
+
+            if show_progress and (batch_idx + 1) % 10 == 0:
+                progress = (batch_idx + 1) / total_batches * 100
+                print(f"   Batch {batch_idx + 1}/{total_batches} ({progress:.1f}%)")
+
+        if show_progress:
+            total_persons = sum(len(p) for p in person_detections)
+            print(f"✅ Detected {total_persons} person instances across {len(frames)} frames")
 
         return person_detections
 

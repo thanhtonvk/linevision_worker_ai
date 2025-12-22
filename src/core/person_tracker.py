@@ -14,21 +14,30 @@ from config.settings import settings
 class PersonTracker:
     """
     Class để tracking người và phân tích pose trong tennis
+    Optimized for 12GB GPU with batch inference
     """
 
     def __init__(
         self,
         pose_model_path="src/models/yolov8n-pose.pt",
         person_model_path="src/models/yolov8n.pt",  # Changed to nano
+        batch_size=16,  # Optimized for 12GB GPU
     ):
         self.pose_model = YOLO(pose_model_path)
         self.person_model = YOLO(person_model_path)
+        self.batch_size = batch_size
         self.tracked_persons = {}  # {person_id: person_data}
         self.next_person_id = 1
         self.ball_hits_by_person = defaultdict(list)  # {person_id: [hit_data]}
         self.player_positions = defaultdict(list)  # {player_id: [(frame, x, y), ...]} - NEW
         self.max_frame_height = settings.max_frame_height
         self.enable_frame_resize = settings.enable_frame_resize
+
+        # Move models to GPU if available
+        import torch
+        if torch.cuda.is_available():
+            self.pose_model.to('cuda')
+            self.person_model.to('cuda')
 
     def _resize_frame(self, frame):
         """
@@ -50,10 +59,85 @@ class PersonTracker:
         )
         return resized, scale
 
+    def _batch_frames(self, frames):
+        """Chia frames thành các batch để xử lý"""
+        return [
+            frames[i : i + self.batch_size]
+            for i in range(0, len(frames), self.batch_size)
+        ]
+
+    def _batch_pose_detection(self, frames, show_progress=True):
+        """Batch pose detection cho tất cả frames
+
+        Args:
+            frames: List of video frames
+            show_progress: Show progress during inference
+
+        Returns:
+            List of pose detections for each frame
+        """
+        import torch
+
+        batches = self._batch_frames(frames)
+        all_pose_detections = []
+        total_batches = len(batches)
+
+        if show_progress:
+            print(f"🏃 Pose detection: {len(frames)} frames, {total_batches} batches (batch_size={self.batch_size})")
+
+        for batch_idx, batch in enumerate(batches):
+            # Resize frames in batch
+            resized_batch = []
+            scales = []
+            for frame in batch:
+                resized_frame, scale = self._resize_frame(frame)
+                resized_batch.append(resized_frame)
+                scales.append(scale)
+
+            # Batch pose inference
+            pose_results = self.pose_model.predict(
+                resized_batch,
+                batch=len(resized_batch),
+                verbose=False,
+                conf=0.5,
+                half=True  # Enable FP16 for faster inference
+            )
+
+            for res_idx, (pose_result, scale) in enumerate(zip(pose_results, scales)):
+                frame_poses = []
+                if pose_result.keypoints is not None:
+                    for keypoints in pose_result.keypoints:
+                        kpts = keypoints.xy[0].cpu().numpy()  # [17, 2] - 17 keypoints
+                        conf = keypoints.conf[0].cpu().numpy()  # [17] - confidence
+
+                        # Scale keypoints back to original dimensions
+                        if scale != 1.0:
+                            kpts = kpts / scale
+
+                        frame_poses.append({"keypoints": kpts, "conf": conf})
+
+                all_pose_detections.append(frame_poses)
+
+            if show_progress and (batch_idx + 1) % 10 == 0:
+                progress = (batch_idx + 1) / total_batches * 100
+                print(f"   Batch {batch_idx + 1}/{total_batches} ({progress:.1f}%)")
+
+            # Periodic memory cleanup
+            if batch_idx % 20 == 0 and batch_idx > 0:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+        if show_progress:
+            total_poses = sum(len(p) for p in all_pose_detections)
+            print(f"✅ Detected {total_poses} pose instances across {len(frames)} frames")
+
+        return all_pose_detections
+
     def detect_and_track_persons(
         self, frames, ball_positions, direction_flags, cached_person_detections=None
     ):
-        """Detect và track người qua các frame
+        """Detect và track người qua các frame với batch inference
 
         Args:
             frames: List of video frames
@@ -61,12 +145,11 @@ class PersonTracker:
             direction_flags: Direction change flags
             cached_person_detections: Optional pre-computed person detections from ball_detector
         """
+        import torch
+
         print("Đang detect và track người...")
         if self.enable_frame_resize:
             print(f"Frame resizing enabled: max height = {self.max_frame_height}px")
-
-        person_detections = []
-        pose_detections = []
 
         # Check if we can use cached person detections
         use_cached = cached_person_detections is not None and len(
@@ -75,61 +158,63 @@ class PersonTracker:
         if use_cached:
             print("⚡ Using cached person detections (optimization enabled)")
 
-        for frame_idx, frame in enumerate(frames):
-            # Resize frame to reduce memory usage
-            resized_frame, scale = self._resize_frame(frame)
-            original_height, original_width = frame.shape[:2]
+        # Step 1: Batch pose detection for all frames
+        print("\n📌 Step 1: Batch pose detection")
+        pose_detections = self._batch_pose_detection(frames, show_progress=True)
 
-            # Detect người - use cached if available, otherwise run inference
-            frame_persons = []
-            if use_cached:
-                # Use cached detections from ball_detector
-                cached_persons = cached_person_detections[frame_idx]
-                for person in cached_persons:
-                    # cached format: {'bbox': (x1, y1, x2, y2), 'conf': conf}
-                    frame_persons.append(person)
-            else:
-                # Run person detection (original code)
+        # Step 2: Process person detections (use cached or batch detect)
+        print("\n📌 Step 2: Person detection & tracking")
+        person_detections = []
+
+        if not use_cached:
+            # Batch person detection if not cached
+            print("Running batch person detection...")
+            batches = self._batch_frames(frames)
+            all_person_detections = []
+
+            for batch_idx, batch in enumerate(batches):
+                resized_batch = []
+                scales = []
+                for frame in batch:
+                    resized_frame, scale = self._resize_frame(frame)
+                    resized_batch.append(resized_frame)
+                    scales.append(scale)
+
                 person_results = self.person_model.predict(
-                    resized_frame, verbose=False, conf=0.6
+                    resized_batch,
+                    batch=len(resized_batch),
+                    verbose=False,
+                    conf=0.6,
+                    half=True
                 )
 
-                if person_results[0].boxes is not None:
-                    for box in person_results[0].boxes:
-                        if int(box.cls) == 0:  # person class
-                            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                            conf = box.conf.cpu().numpy()[0]
-                            # Scale bounding box back to original dimensions
-                            if scale != 1.0:
-                                x1, y1, x2, y2 = (
-                                    x1 / scale,
-                                    y1 / scale,
-                                    x2 / scale,
-                                    y2 / scale,
-                                )
-                            frame_persons.append(
-                                {
+                for res_idx, (person_result, scale) in enumerate(zip(person_results, scales)):
+                    frame_persons = []
+                    if person_result.boxes is not None:
+                        for box in person_result.boxes:
+                            if int(box.cls) == 0:  # person class
+                                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                                conf = float(box.conf.cpu().numpy()[0])
+                                if scale != 1.0:
+                                    x1, y1, x2, y2 = x1/scale, y1/scale, x2/scale, y2/scale
+                                frame_persons.append({
                                     "bbox": (int(x1), int(y1), int(x2), int(y2)),
                                     "conf": conf,
-                                }
-                            )
+                                })
+                    all_person_detections.append(frame_persons)
 
-            # Detect pose on resized frame
-            pose_results = self.pose_model.predict(
-                resized_frame, verbose=False, conf=0.5
-            )
-            frame_poses = []
+            cached_person_detections = all_person_detections
 
-            if pose_results[0].keypoints is not None:
-                for keypoints in pose_results[0].keypoints:
-                    kpts = keypoints.xy[0].cpu().numpy()  # [17, 2] - 17 keypoints
-                    conf = (
-                        keypoints.conf[0].cpu().numpy()
-                    )  # [17] - confidence for each keypoint
-                    # Scale keypoints back to original dimensions
-                    if scale != 1.0:
-                        kpts = kpts / scale
-                    frame_poses.append({"keypoints": kpts, "conf": conf})
+        # Step 3: Track persons across frames
+        print("\n📌 Step 3: Tracking persons across frames")
+        total_frames = len(frames)
+
+        for frame_idx in range(total_frames):
+            # Get person detections for this frame
+            frame_persons = cached_person_detections[frame_idx]
+
+            # Get pose detections for this frame
+            frame_poses = pose_detections[frame_idx]
 
             # Match persons with poses
             matched_data = self._match_persons_with_poses(frame_persons, frame_poses)
@@ -140,28 +225,25 @@ class PersonTracker:
             )
 
             person_detections.append(tracked_frame_data)
-            pose_detections.append(frame_poses)
 
             # Check for ball hits by tracked persons
-            if frame_idx < len(ball_positions) and ball_positions[frame_idx] != (
-                -1,
-                -1,
-            ):
+            if frame_idx < len(ball_positions) and ball_positions[frame_idx] != (-1, -1):
                 self._check_ball_person_hits(
                     ball_positions[frame_idx],
                     tracked_frame_data,
-                    (
-                        direction_flags[frame_idx]
-                        if frame_idx < len(direction_flags)
-                        else 0
-                    ),
+                    direction_flags[frame_idx] if frame_idx < len(direction_flags) else 0,
                     frame_idx,
                 )
 
-            # Periodic garbage collection to free memory
+            # Progress logging
+            if (frame_idx + 1) % 100 == 0:
+                print(f"   Processed {frame_idx + 1}/{total_frames} frames")
+
+            # Periodic garbage collection
             if frame_idx % 50 == 0 and frame_idx > 0:
                 gc.collect()
 
+        print(f"✅ Tracked {len(self.tracked_persons)} unique persons")
         return person_detections, pose_detections
 
     def _match_persons_with_poses(self, persons, poses):
