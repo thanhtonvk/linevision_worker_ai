@@ -57,7 +57,6 @@ class StatsVisualizer:
             Ảnh heatmap
         """
         if not positions:
-            print(f"⚠️ Không có dữ liệu vị trí cho player {player_id}")
             return None
 
         # Xác định kích thước
@@ -124,7 +123,6 @@ class StatsVisualizer:
         # Lưu file nếu cần
         if output_path:
             cv2.imwrite(output_path, result)
-            print(f"✅ Saved heatmap: {output_path}")
 
         return result
 
@@ -220,7 +218,6 @@ class StatsVisualizer:
         # Lưu file
         if output_path:
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
-            print(f"✅ Saved stats table: {output_path}")
 
         # Convert to numpy array
         fig.canvas.draw()
@@ -297,7 +294,6 @@ class StatsVisualizer:
         # Lưu file
         if output_path:
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
-            print(f"✅ Saved ranking board: {output_path}")
 
         # Convert to numpy array
         fig.canvas.draw()
@@ -358,7 +354,6 @@ class StatsVisualizer:
         # Lưu file
         if output_path:
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
-            print(f"✅ Saved speed chart: {output_path}")
 
         # Convert to numpy array
         fig.canvas.draw()
@@ -410,7 +405,6 @@ class StatsVisualizer:
         # Lưu file
         if output_path:
             plt.savefig(output_path, dpi=150, bbox_inches='tight')
-            print(f"✅ Saved shot density chart: {output_path}")
 
         # Convert to numpy array
         fig.canvas.draw()
@@ -437,10 +431,6 @@ class StatsVisualizer:
         """
         os.makedirs(output_dir, exist_ok=True)
 
-        print("\n" + "=" * 60)
-        print("📊 TẠO BÁO CÁO PHÂN TÍCH NGƯỜI CHƠI")
-        print("=" * 60)
-
         # 1. Tạo bảng xếp hạng
         self.create_ranking_board(
             rankings,
@@ -449,8 +439,6 @@ class StatsVisualizer:
 
         # 2. Tạo thống kê và heatmap cho từng người
         for player_id, stats in all_stats.items():
-            print(f"\n🎾 Đang tạo báo cáo cho Player {player_id}...")
-
             # Stats table
             self.create_stats_table(
                 stats,
@@ -490,9 +478,6 @@ class StatsVisualizer:
             drive_speeds,
             output_path=os.path.join(output_dir, "speed_comparison.png")
         )
-
-        print("\n✅ HOÀN THÀNH TẠO BÁO CÁO!")
-        print(f"📁 Các file đã lưu tại: {output_dir}")
 
     def crop_player_image(
         self,

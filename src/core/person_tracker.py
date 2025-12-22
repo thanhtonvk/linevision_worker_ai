@@ -20,24 +20,23 @@ class PersonTracker:
     def __init__(
         self,
         pose_model_path="src/models/yolov8n-pose.pt",
-        person_model_path="src/models/yolov8n.pt",  # Changed to nano
         batch_size=16,  # Optimized for 12GB GPU
     ):
+        # Chỉ sử dụng pose model - nó trả về cả bbox và keypoints
+        # Không cần person_model riêng, giảm bộ nhớ GPU
         self.pose_model = YOLO(pose_model_path)
-        self.person_model = YOLO(person_model_path)
         self.batch_size = batch_size
         self.tracked_persons = {}  # {person_id: person_data}
         self.next_person_id = 1
         self.ball_hits_by_person = defaultdict(list)  # {person_id: [hit_data]}
-        self.player_positions = defaultdict(list)  # {player_id: [(frame, x, y), ...]} - NEW
+        self.player_positions = defaultdict(list)  # {player_id: [(frame, x, y), ...]}
         self.max_frame_height = settings.max_frame_height
         self.enable_frame_resize = settings.enable_frame_resize
 
-        # Move models to GPU if available
+        # Move model to GPU if available
         import torch
         if torch.cuda.is_available():
             self.pose_model.to('cuda')
-            self.person_model.to('cuda')
 
     def _resize_frame(self, frame):
         """
@@ -66,27 +65,26 @@ class PersonTracker:
             for i in range(0, len(frames), self.batch_size)
         ]
 
-    def _batch_pose_detection(self, frames, show_progress=True):
+    def _batch_pose_detection(self, frames, conf_threshold=0.5):
         """Batch pose detection cho tất cả frames
+        Trả về cả person bboxes và keypoints từ pose model (gộp 2 trong 1)
 
         Args:
             frames: List of video frames
-            show_progress: Show progress during inference
+            conf_threshold: Confidence threshold for detection
 
         Returns:
-            List of pose detections for each frame
+            Tuple of (all_pose_detections, all_person_detections)
+            - all_pose_detections: List of pose data for each frame
+            - all_person_detections: List of person bboxes for each frame (compatible with ball_detector)
         """
         import torch
 
         batches = self._batch_frames(frames)
         all_pose_detections = []
-        total_batches = len(batches)
-
-        if show_progress:
-            print(f"🏃 Pose detection: {len(frames)} frames, {total_batches} batches (batch_size={self.batch_size})")
+        all_person_detections = []
 
         for batch_idx, batch in enumerate(batches):
-            # Resize frames in batch
             resized_batch = []
             scales = []
             for frame in batch:
@@ -94,139 +92,93 @@ class PersonTracker:
                 resized_batch.append(resized_frame)
                 scales.append(scale)
 
-            # Batch pose inference
             pose_results = self.pose_model.predict(
                 resized_batch,
                 batch=len(resized_batch),
                 verbose=False,
-                conf=0.5,
-                half=True  # Enable FP16 for faster inference
+                conf=conf_threshold,
+                half=True
             )
 
             for res_idx, (pose_result, scale) in enumerate(zip(pose_results, scales)):
                 frame_poses = []
-                if pose_result.keypoints is not None:
-                    for keypoints in pose_result.keypoints:
-                        kpts = keypoints.xy[0].cpu().numpy()  # [17, 2] - 17 keypoints
-                        conf = keypoints.conf[0].cpu().numpy()  # [17] - confidence
+                frame_persons = []
 
-                        # Scale keypoints back to original dimensions
+                # Pose model trả về cả boxes và keypoints
+                if pose_result.boxes is not None and pose_result.keypoints is not None:
+                    boxes = pose_result.boxes
+                    keypoints_list = pose_result.keypoints
+
+                    for i in range(len(boxes)):
+                        # Extract bbox
+                        x1, y1, x2, y2 = boxes.xyxy[i].cpu().numpy()
+                        box_conf = float(boxes.conf[i].cpu().numpy())
+
+                        # Scale back if resized
+                        if scale != 1.0:
+                            x1, y1, x2, y2 = x1/scale, y1/scale, x2/scale, y2/scale
+
+                        # Extract keypoints
+                        kpts = keypoints_list.xy[i].cpu().numpy()
+                        kpts_conf = keypoints_list.conf[i].cpu().numpy()
+
                         if scale != 1.0:
                             kpts = kpts / scale
 
-                        frame_poses.append({"keypoints": kpts, "conf": conf})
+                        frame_poses.append({
+                            "keypoints": kpts,
+                            "conf": kpts_conf,
+                            "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                            "box_conf": box_conf
+                        })
+
+                        # Person detection format (compatible with ball_detector)
+                        frame_persons.append({
+                            "bbox": (int(x1), int(y1), int(x2), int(y2)),
+                            "conf": box_conf
+                        })
 
                 all_pose_detections.append(frame_poses)
+                all_person_detections.append(frame_persons)
 
-            if show_progress and (batch_idx + 1) % 10 == 0:
-                progress = (batch_idx + 1) / total_batches * 100
-                print(f"   Batch {batch_idx + 1}/{total_batches} ({progress:.1f}%)")
-
-            # Periodic memory cleanup
             if batch_idx % 20 == 0 and batch_idx > 0:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 gc.collect()
 
-        if show_progress:
-            total_poses = sum(len(p) for p in all_pose_detections)
-            print(f"✅ Detected {total_poses} pose instances across {len(frames)} frames")
-
-        return all_pose_detections
+        return all_pose_detections, all_person_detections
 
     def detect_and_track_persons(
-        self, frames, ball_positions, direction_flags, cached_person_detections=None
+        self, frames, ball_positions, direction_flags, conf_threshold=0.5
     ):
         """Detect và track người qua các frame với batch inference
+        Sử dụng pose model duy nhất cho cả person detection và pose estimation
 
         Args:
             frames: List of video frames
             ball_positions: Ball positions for each frame
             direction_flags: Direction change flags
-            cached_person_detections: Optional pre-computed person detections from ball_detector
+            conf_threshold: Confidence threshold for detection
+
+        Returns:
+            Tuple of (tracked_person_detections, pose_detections, raw_person_detections)
+            - tracked_person_detections: List of tracked person data per frame
+            - pose_detections: List of pose data per frame
+            - raw_person_detections: List of person bboxes per frame (for ball_detector)
         """
-        import torch
+        # Chạy pose detection 1 lần duy nhất - lấy cả pose và person bboxes
+        pose_detections, raw_person_detections = self._batch_pose_detection(frames, conf_threshold)
 
-        print("Đang detect và track người...")
-        if self.enable_frame_resize:
-            print(f"Frame resizing enabled: max height = {self.max_frame_height}px")
+        tracked_person_detections = []
 
-        # Check if we can use cached person detections
-        use_cached = cached_person_detections is not None and len(
-            cached_person_detections
-        ) == len(frames)
-        if use_cached:
-            print("⚡ Using cached person detections (optimization enabled)")
-
-        # Step 1: Batch pose detection for all frames
-        print("\n📌 Step 1: Batch pose detection")
-        pose_detections = self._batch_pose_detection(frames, show_progress=True)
-
-        # Step 2: Process person detections (use cached or batch detect)
-        print("\n📌 Step 2: Person detection & tracking")
-        person_detections = []
-
-        if not use_cached:
-            # Batch person detection if not cached
-            print("Running batch person detection...")
-            batches = self._batch_frames(frames)
-            all_person_detections = []
-
-            for batch_idx, batch in enumerate(batches):
-                resized_batch = []
-                scales = []
-                for frame in batch:
-                    resized_frame, scale = self._resize_frame(frame)
-                    resized_batch.append(resized_frame)
-                    scales.append(scale)
-
-                person_results = self.person_model.predict(
-                    resized_batch,
-                    batch=len(resized_batch),
-                    verbose=False,
-                    conf=0.6,
-                    half=True
-                )
-
-                for res_idx, (person_result, scale) in enumerate(zip(person_results, scales)):
-                    frame_persons = []
-                    if person_result.boxes is not None:
-                        for box in person_result.boxes:
-                            if int(box.cls) == 0:  # person class
-                                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                                conf = float(box.conf.cpu().numpy()[0])
-                                if scale != 1.0:
-                                    x1, y1, x2, y2 = x1/scale, y1/scale, x2/scale, y2/scale
-                                frame_persons.append({
-                                    "bbox": (int(x1), int(y1), int(x2), int(y2)),
-                                    "conf": conf,
-                                })
-                    all_person_detections.append(frame_persons)
-
-            cached_person_detections = all_person_detections
-
-        # Step 3: Track persons across frames
-        print("\n📌 Step 3: Tracking persons across frames")
-        total_frames = len(frames)
-
-        for frame_idx in range(total_frames):
-            # Get person detections for this frame
-            frame_persons = cached_person_detections[frame_idx]
-
-            # Get pose detections for this frame
+        for frame_idx in range(len(frames)):
             frame_poses = pose_detections[frame_idx]
 
-            # Match persons with poses
-            matched_data = self._match_persons_with_poses(frame_persons, frame_poses)
+            # Pose model đã có sẵn bbox trong mỗi pose, sử dụng trực tiếp
+            tracked_frame_data = self._track_persons_from_poses(frame_poses, frame_idx)
 
-            # Track persons across frames
-            tracked_frame_data = self._track_persons_across_frames(
-                matched_data, frame_idx
-            )
+            tracked_person_detections.append(tracked_frame_data)
 
-            person_detections.append(tracked_frame_data)
-
-            # Check for ball hits by tracked persons
             if frame_idx < len(ball_positions) and ball_positions[frame_idx] != (-1, -1):
                 self._check_ball_person_hits(
                     ball_positions[frame_idx],
@@ -235,16 +187,82 @@ class PersonTracker:
                     frame_idx,
                 )
 
-            # Progress logging
-            if (frame_idx + 1) % 100 == 0:
-                print(f"   Processed {frame_idx + 1}/{total_frames} frames")
-
-            # Periodic garbage collection
             if frame_idx % 50 == 0 and frame_idx > 0:
                 gc.collect()
 
-        print(f"✅ Tracked {len(self.tracked_persons)} unique persons")
-        return person_detections, pose_detections
+        return tracked_person_detections, pose_detections, raw_person_detections
+
+    def _track_persons_from_poses(self, frame_poses, frame_idx):
+        """Track người từ pose detections (đã có sẵn bbox)
+
+        Args:
+            frame_poses: List of pose data với bbox đã có sẵn
+            frame_idx: Frame index
+
+        Returns:
+            List of tracked person data
+        """
+        tracked_data = []
+
+        for pose_data in frame_poses:
+            bbox = pose_data.get("bbox")
+            if bbox is None:
+                continue
+
+            person = {
+                "bbox": bbox,
+                "conf": pose_data.get("box_conf", 0.5)
+            }
+            pose = {
+                "keypoints": pose_data.get("keypoints"),
+                "conf": pose_data.get("conf")
+            }
+
+            # Tìm person gần nhất trong frame trước
+            best_match_id = None
+            best_iou = 0
+
+            for person_id, person_data in self.tracked_persons.items():
+                if person_data["last_seen"] == frame_idx - 1:
+                    iou = self._calculate_iou(person["bbox"], person_data["bbox"])
+                    if iou > best_iou and iou > 0.3:
+                        best_iou = iou
+                        best_match_id = person_id
+
+            if best_match_id is not None:
+                person_id = best_match_id
+                self.tracked_persons[person_id].update({
+                    "bbox": person["bbox"],
+                    "conf": person["conf"],
+                    "pose": pose,
+                    "last_seen": frame_idx,
+                    "frame_count": self.tracked_persons[person_id]["frame_count"] + 1,
+                })
+            else:
+                person_id = self.next_person_id
+                self.next_person_id += 1
+                self.tracked_persons[person_id] = {
+                    "bbox": person["bbox"],
+                    "conf": person["conf"],
+                    "pose": pose,
+                    "first_seen": frame_idx,
+                    "last_seen": frame_idx,
+                    "frame_count": 1,
+                }
+
+            tracked_data.append({
+                "person_id": person_id,
+                "person": person,
+                "pose": pose
+            })
+
+            # Lưu vị trí người chơi cho heatmap
+            x1, y1, x2, y2 = person["bbox"]
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
+            self.player_positions[person_id].append((frame_idx, center_x, center_y))
+
+        return tracked_data
 
     def _match_persons_with_poses(self, persons, poses):
         """Match persons với poses dựa trên vị trí bbox"""

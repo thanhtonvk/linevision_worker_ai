@@ -28,7 +28,7 @@ class PlayerAnalysisService:
         ball_model_path: str = "models/ball_best.pt",
         person_model_path: str = "models/yolov8n.pt",
         pose_model_path: str = "models/yolov8n-pose.pt",
-        batch_size: int = 16  # Optimized for 12GB GPU
+        batch_size: int = 16
     ):
         """
         Khởi tạo service
@@ -45,9 +45,9 @@ class PlayerAnalysisService:
             person_model_path=person_model_path,
             batch_size=batch_size
         )
+        # PersonTracker chỉ sử dụng pose model (đã bao gồm cả bbox và keypoints)
         self.person_tracker = PersonTracker(
             pose_model_path=pose_model_path,
-            person_model_path=person_model_path,
             batch_size=batch_size
         )
 
@@ -84,21 +84,13 @@ class PlayerAnalysisService:
         """
         os.makedirs(output_folder, exist_ok=True)
 
-        # Track timing for performance analysis
         timings = {}
         total_start = time.time()
 
         # 1. Đọc video
-        print("=" * 60)
-        print("🎬 BƯỚC 1: ĐỌC VIDEO")
-        print("=" * 60)
         step_start = time.time()
-
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        print(f"📹 FPS: {fps}, Tổng frames: {total_frames}")
 
         frames = []
         while True:
@@ -106,66 +98,61 @@ class PlayerAnalysisService:
             if not ret:
                 break
             frames.append(frame)
-            if len(frames) % 100 == 0:
-                print(f"   Đã đọc {len(frames)}/{total_frames} frames...")
         cap.release()
-
-        print(f"✅ Đã đọc xong {len(frames)} frames")
         timings["read_video"] = time.time() - step_start
 
         # 2. Detect bóng
-        print("\n" + "=" * 60)
-        print("🎾 BƯỚC 2: DETECT BÓNG")
-        print("=" * 60)
         step_start = time.time()
-
         ball_positions = self.ball_detector.detect_positions(frames)
         timings["ball_detection"] = time.time() - step_start
-        print(f"⏱️ Ball detection: {timings['ball_detection']:.2f}s ({len(frames)/timings['ball_detection']:.1f} FPS)")
 
-        # 3. Phân tích thay đổi hướng
-        print("\n🔄 Phân tích thay đổi hướng...")
+        # 3. Person & Pose Detection (chỉ chạy 1 lần với pose model)
+        # Pose model trả về cả bbox và keypoints - tối ưu không cần chạy 2 model
         step_start = time.time()
-        direction_flags, person_detections = self.ball_detector.get_enhanced_direction_change_flags(
-            frames,
-            ball_positions,
-            angle_threshold=angle_threshold,
-            person_conf=person_conf,
-            intersection_threshold=intersection_threshold
-        )
-        timings["direction_analysis"] = time.time() - step_start
-        print(f"⏱️ Direction analysis: {timings['direction_analysis']:.2f}s")
-
-        # 4. Tracking người
-        print("\n" + "=" * 60)
-        print("👥 BƯỚC 3: TRACKING NGƯỜI CHƠI")
-        print("=" * 60)
-        step_start = time.time()
-
-        # Reset tracker
         self.person_tracker.tracked_persons = {}
         self.person_tracker.next_person_id = 1
         self.person_tracker.ball_hits_by_person.clear()
         self.person_tracker.player_positions.clear()
 
-        person_detections_tracked, pose_detections = self.person_tracker.detect_and_track_persons(
+        # Chạy pose detection trước để lấy person_detections
+        pose_detections, raw_person_detections = self.person_tracker._batch_pose_detection(
+            frames, conf_threshold=person_conf
+        )
+        timings["person_pose_detection"] = time.time() - step_start
+
+        # 4. Phân tích thay đổi hướng (sử dụng cached person_detections)
+        step_start = time.time()
+        direction_flags, _ = self.ball_detector.get_enhanced_direction_change_flags(
             frames,
             ball_positions,
-            direction_flags,
-            cached_person_detections=person_detections
+            angle_threshold=angle_threshold,
+            person_conf=person_conf,
+            intersection_threshold=intersection_threshold,
+            cached_person_detections=raw_person_detections
         )
+        timings["direction_analysis"] = time.time() - step_start
+
+        # 5. Tracking người (sử dụng pose detections đã có)
+        step_start = time.time()
+        person_detections_tracked = []
+        for frame_idx in range(len(frames)):
+            frame_poses = pose_detections[frame_idx]
+            tracked_frame_data = self.person_tracker._track_persons_from_poses(frame_poses, frame_idx)
+            person_detections_tracked.append(tracked_frame_data)
+
+            if frame_idx < len(ball_positions) and ball_positions[frame_idx] != (-1, -1):
+                self.person_tracker._check_ball_person_hits(
+                    ball_positions[frame_idx],
+                    tracked_frame_data,
+                    direction_flags[frame_idx] if frame_idx < len(direction_flags) else 0,
+                    frame_idx,
+                )
 
         player_positions = self.person_tracker.get_player_positions()
         timings["person_tracking"] = time.time() - step_start
-        print(f"✅ Đã track {len(self.person_tracker.tracked_persons)} người chơi")
-        print(f"⏱️ Person tracking: {timings['person_tracking']:.2f}s ({len(frames)/timings['person_tracking']:.1f} FPS)")
 
-        # 5. Phân tích chỉ số
-        print("\n" + "=" * 60)
-        print("📊 BƯỚC 4: PHÂN TÍCH CHỈ SỐ")
-        print("=" * 60)
+        # 6. Phân tích chỉ số
         step_start = time.time()
-
         stats_analyzer = PlayerStatsAnalyzer(
             court_points=court_points,
             net_start_idx=net_start_idx,
@@ -183,18 +170,12 @@ class PlayerAnalysisService:
         all_stats = stats_analyzer.get_all_players_stats()
         rankings = stats_analyzer.calculate_player_ranking()
         timings["stats_analysis"] = time.time() - step_start
-        print(f"⏱️ Stats analysis: {timings['stats_analysis']:.2f}s")
 
-        # 6. Tạo visualization
-        print("\n" + "=" * 60)
-        print("🎨 BƯỚC 5: TẠO VISUALIZATION")
-        print("=" * 60)
+        # 7. Tạo visualization
         step_start = time.time()
-
         visualizer = StatsVisualizer(court_points=court_points)
         court_image = frames[0].copy() if frames else None
 
-        # Tạo các file output
         output_files = {}
 
         # Ranking board
@@ -260,13 +241,8 @@ class PlayerAnalysisService:
             player_images[player_id] = player_output
 
         timings["visualization"] = time.time() - step_start
-        print(f"⏱️ Visualization: {timings['visualization']:.2f}s")
 
         # 7. Xây dựng kết quả JSON
-        print("\n" + "=" * 60)
-        print("📋 BƯỚC 6: TẠO KẾT QUẢ JSON")
-        print("=" * 60)
-
         result = {
             "video_info": {
                 "path": video_path,
@@ -334,27 +310,12 @@ class PlayerAnalysisService:
         total_time = time.time() - total_start
         timings["total"] = total_time
 
-        print("\n" + "=" * 60)
-        print("⏱️ THỐNG KÊ THỜI GIAN")
-        print("=" * 60)
-        print(f"📹 Đọc video:        {timings.get('read_video', 0):.2f}s")
-        print(f"🎾 Ball detection:   {timings.get('ball_detection', 0):.2f}s")
-        print(f"🔄 Direction:        {timings.get('direction_analysis', 0):.2f}s")
-        print(f"👥 Person tracking:  {timings.get('person_tracking', 0):.2f}s")
-        print(f"📊 Stats analysis:   {timings.get('stats_analysis', 0):.2f}s")
-        print(f"🎨 Visualization:    {timings.get('visualization', 0):.2f}s")
-        print("-" * 40)
-        print(f"⏱️ TỔNG THỜI GIAN:    {total_time:.2f}s")
-        print(f"📈 Tốc độ trung bình: {len(frames)/total_time:.1f} FPS")
-        print("=" * 60)
-
         # Add timing info to result
         result["performance"] = {
             "total_time_seconds": round(total_time, 2),
-            "average_fps": round(len(frames) / total_time, 1),
+            "average_fps": round(len(frames) / total_time, 1) if total_time > 0 else 0,
             "batch_size": self.batch_size,
             "timings": {k: round(v, 2) for k, v in timings.items()}
         }
 
-        print("✅ HOÀN THÀNH PHÂN TÍCH!")
         return result

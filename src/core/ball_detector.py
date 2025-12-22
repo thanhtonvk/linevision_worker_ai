@@ -61,8 +61,6 @@ class BallDetector:
 
     def reset_model(self):
         """Clear GPU + reload YOLO model."""
-        print("⚠️ GPU RAM cao, reload YOLO model...")
-
         try:
             del self.model
         except:
@@ -72,7 +70,6 @@ class BallDetector:
         gc.collect()
 
         self.model = YOLO(self.model_path).to("cuda")
-        print("✅ Model loaded lại thành công.")
 
     def batch_frames(self, frames):
         """Chia frames thành các batch để xử lý"""
@@ -81,34 +78,28 @@ class BallDetector:
             for i in range(0, len(frames), self.batch_size)
         ]
 
-    def detect_positions(self, frames, show_progress=True):
+    def detect_positions(self, frames):
         """Detect vị trí bóng trong các frames với batch inference
 
         Args:
             frames: List of video frames
-            show_progress: Show progress during inference
 
         Returns:
             List of (x, y) positions for each frame
         """
         batches = self.batch_frames(frames)
         positions = []
-        total_batches = len(batches)
 
-        if show_progress:
-            print(f"🎾 Ball detection: {len(frames)} frames, {total_batches} batches (batch_size={self.batch_size})")
-
-        for batch_idx, batch in enumerate(batches):
+        for batch in batches:
             if gpu_memory_full():
                 self.reset_model()
 
-            # Batch inference with half precision
             results = self.model.predict(
                 batch,
-                batch=len(batch),  # Use actual batch size
+                batch=len(batch),
                 verbose=False,
                 conf=self.conf,
-                half=True  # Enable FP16 for faster inference
+                half=True
             )
 
             for res in results:
@@ -118,14 +109,6 @@ class BallDetector:
                     positions.append((float(x), float(y)))
                 else:
                     positions.append((-1, -1))
-
-            if show_progress and (batch_idx + 1) % 10 == 0:
-                progress = (batch_idx + 1) / total_batches * 100
-                print(f"   Batch {batch_idx + 1}/{total_batches} ({progress:.1f}%)")
-
-        if show_progress:
-            detected = sum(1 for p in positions if p != (-1, -1))
-            print(f"✅ Detected {detected}/{len(positions)} ball positions")
 
         return positions
 
@@ -233,42 +216,37 @@ class BallDetector:
 
         return interpolated
 
-    def detect_persons(self, frames, person_conf=0.5, show_progress=True):
+    def detect_persons(self, frames, person_conf=0.5):
         """Detect người trong frames với batch inference
 
         Args:
             frames: List of video frames
             person_conf: Confidence threshold for person detection
-            show_progress: Show progress during inference
 
         Returns:
             List of person detections for each frame
         """
         batches = self.batch_frames(frames)
         person_detections = []
-        total_batches = len(batches)
 
-        if show_progress:
-            print(f"👥 Person detection: {len(frames)} frames, {total_batches} batches")
-
-        for batch_idx, batch in enumerate(batches):
+        for batch in batches:
             if gpu_memory_full():
                 torch.cuda.empty_cache()
                 gc.collect()
 
             results = self.person_model.predict(
                 batch,
-                batch=len(batch),  # Use actual batch size
+                batch=len(batch),
                 verbose=False,
                 conf=person_conf,
-                half=True  # Enable FP16
+                half=True
             )
 
             for res in results:
                 frame_persons = []
                 if res.boxes is not None and len(res.boxes) > 0:
                     for box in res.boxes:
-                        if int(box.cls) == 0:  # person class
+                        if int(box.cls) == 0:
                             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
                             conf = float(box.conf.cpu().numpy()[0])
                             if conf >= person_conf:
@@ -279,14 +257,6 @@ class BallDetector:
                                     }
                                 )
                 person_detections.append(frame_persons)
-
-            if show_progress and (batch_idx + 1) % 10 == 0:
-                progress = (batch_idx + 1) / total_batches * 100
-                print(f"   Batch {batch_idx + 1}/{total_batches} ({progress:.1f}%)")
-
-        if show_progress:
-            total_persons = sum(len(p) for p in person_detections)
-            print(f"✅ Detected {total_persons} person instances across {len(frames)} frames")
 
         return person_detections
 
@@ -331,17 +301,21 @@ class BallDetector:
         angle_threshold=45,
         person_conf=0.5,
         intersection_threshold=80,
+        cached_person_detections=None,
     ):
-        """Phân loại thay đổi hướng: bóng chạm người vs chạm đất"""
-        print("Đang detect người trong video...")
-        person_detections = self.detect_persons(frames, person_conf=person_conf)
+        """Phân loại thay đổi hướng: bóng chạm người vs chạm đất
 
-        print("Đang phân tích thay đổi hướng...")
+        Args:
+            cached_person_detections: Optional pre-computed person detections to avoid re-detecting
+        """
+        # Sử dụng cache nếu có, nếu không thì detect
+        if cached_person_detections is not None and len(cached_person_detections) == len(frames):
+            person_detections = cached_person_detections
+        else:
+            person_detections = self.detect_persons(frames, person_conf=person_conf)
         change_points = set(self._detect_direction_changes(positions, angle_threshold))
 
         direction_flags = []
-        person_hit_count = 0
-        ground_hit_count = 0
 
         for i in range(len(positions)):
             if i in change_points:
@@ -352,17 +326,10 @@ class BallDetector:
                     ball_pos, persons, threshold=intersection_threshold
                 ):
                     direction_flags.append(2)  # Bóng được đánh bởi người
-                    person_hit_count += 1
                 else:
                     direction_flags.append(1)  # Bóng chạm đất
-                    ground_hit_count += 1
             else:
                 direction_flags.append(0)  # Không thay đổi hướng
-
-        print(f"Phân loại hoàn tất:")
-        print(f"- Bóng chạm người: {person_hit_count} lần")
-        print(f"- Bóng chạm đất: {ground_hit_count} lần")
-        print(f"- Tổng thay đổi hướng: {person_hit_count + ground_hit_count} lần")
 
         return direction_flags, person_detections
 
@@ -445,7 +412,6 @@ class BallDetector:
             cropped_frames.append(cropped)
 
         if not cropped_frames:
-            print("Không có frame nào để lưu!")
             return
 
         height, width = cropped_frames[0].shape[:2]
@@ -457,4 +423,3 @@ class BallDetector:
                 out.write(frame)
         finally:
             out.release()
-        print(f"Đã lưu video: {output_path}")

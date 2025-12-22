@@ -511,5 +511,4 @@ class PlayerStatsAnalyzer:
             if pid in all_stats:
                 all_stats[pid]["ranking"] = r
 
-        print(f"📊 Thống kê: {len(all_stats)} người chơi có cú đánh")
         return all_stats
