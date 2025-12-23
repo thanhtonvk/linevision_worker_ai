@@ -16,6 +16,8 @@ import traceback
 import shutil
 import threading
 import time
+import requests
+import json
 
 # Create Blueprint
 api_bp = Blueprint("api", __name__)
@@ -30,12 +32,13 @@ analyzer = TennisAnalysisModule(
 # Initialize VAR Detector
 var_detector = VarDetector(model_path=settings.ball_model_path, conf=0.8, batch_size=32)
 
-# Initialize Player Analysis Service
-player_analysis_service = PlayerAnalysisService(
-    ball_model_path=settings.ball_model_path,
-    person_model_path=settings.person_model_path,
-    pose_model_path=settings.pose_model_path
-)
+def create_player_analysis_service():
+    """Tạo instance mới của PlayerAnalysisService cho mỗi request để tránh race condition"""
+    return PlayerAnalysisService(
+        ball_model_path=settings.ball_model_path,
+        person_model_path=settings.person_model_path,
+        batch_size=16
+    )
 
 
 # =============================================================================
@@ -496,8 +499,11 @@ def player_analysis():
         # Base URL cho files (dạng: outputs/request_id)
         base_url = f"outputs/{request_id}"
 
+        # Tạo instance mới của PlayerAnalysisService (thread safety)
+        player_service = create_player_analysis_service()
+
         # Phân tích video
-        result = player_analysis_service.analyze(
+        result = player_service.analyze(
             video_path=video_path,
             court_points=court_points,
             output_folder=request_output_folder,
@@ -534,6 +540,221 @@ def player_analysis():
                 print(f"[CLEANUP] Deleted uploaded video after error: {video_path}")
         except:
             pass
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+def process_player_analysis_async(video_path, court_points, request_output_folder, request_id,
+                                    original_filename, net_start_idx, net_end_idx, ball_conf,
+                                    person_conf, angle_threshold, intersection_threshold):
+    """
+    Xử lý phân tích người chơi trong background thread và gọi callback khi hoàn thành
+    """
+    callback_url = "http://linevision.asia/save_json"
+
+    try:
+        print(f"[ASYNC] Bắt đầu phân tích player cho request {request_id}")
+
+        # Tạo instance mới của PlayerAnalysisService (thread safety)
+        player_service = create_player_analysis_service()
+
+        # Base URL cho files
+        base_url = f"outputs/{request_id}"
+
+        # Phân tích video
+        result = player_service.analyze(
+            video_path=video_path,
+            court_points=court_points,
+            output_folder=request_output_folder,
+            net_start_idx=net_start_idx,
+            net_end_idx=net_end_idx,
+            ball_conf=ball_conf,
+            person_conf=person_conf,
+            angle_threshold=angle_threshold,
+            intersection_threshold=intersection_threshold,
+            base_url=base_url,
+            create_highlights=True
+        )
+
+        # Thêm request_id và expires_at
+        result["request_id"] = request_id
+        result["expires_at"] = (
+            datetime.now() + timedelta(hours=settings.cleanup_hours)
+        ).isoformat()
+
+        # Thêm file_name (tên video với .mp4 thay thành .json)
+        file_name = original_filename.rsplit('.', 1)[0] + '.json' if '.' in original_filename else original_filename + '.json'
+        result["file_name"] = file_name
+
+        print(f"[ASYNC] Phân tích hoàn thành cho request {request_id}")
+
+        # Xóa video upload sau khi xử lý xong
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                print(f"[CLEANUP] Đã xóa video upload: {video_path}")
+        except Exception as cleanup_error:
+            print(f"[CLEANUP ERROR] Không thể xóa video: {cleanup_error}")
+
+        # Gọi callback với retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                print(f"[CALLBACK] Gửi kết quả đến {callback_url} (lần {attempt + 1}/{max_retries})")
+                response = requests.post(
+                    callback_url,
+                    json=result,
+                    headers={"Content-Type": "application/json"},
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    print(f"[CALLBACK] Thành công cho request {request_id}")
+                    break
+                else:
+                    print(f"[CALLBACK] Lỗi HTTP {response.status_code}: {response.text}")
+
+            except requests.exceptions.RequestException as e:
+                print(f"[CALLBACK] Lỗi request (lần {attempt + 1}): {e}")
+
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt
+                print(f"[CALLBACK] Đợi {wait_time}s trước khi thử lại...")
+                time.sleep(wait_time)
+        else:
+            print(f"[CALLBACK] Thất bại sau {max_retries} lần thử cho request {request_id}")
+
+    except Exception as e:
+        print(f"[ASYNC ERROR] Lỗi xử lý request {request_id}: {e}")
+        print(traceback.format_exc())
+
+        # Cleanup on error
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+        except:
+            pass
+        try:
+            if os.path.exists(request_output_folder):
+                shutil.rmtree(request_output_folder)
+        except:
+            pass
+
+        # Gửi thông báo lỗi đến callback
+        file_name = original_filename.rsplit('.', 1)[0] + '.json' if '.' in original_filename else original_filename + '.json'
+        error_payload = {
+            "file_name": file_name,
+            "request_id": request_id,
+            "status": "failed",
+            "error": str(e)
+        }
+
+        try:
+            requests.post(
+                callback_url,
+                json=error_payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+        except:
+            print(f"[CALLBACK ERROR] Không thể gửi thông báo lỗi")
+
+
+@api_bp.route("/api/player-analysis-async", methods=["POST"])
+def player_analysis_async():
+    """
+    Endpoint phân tích người chơi tennis (async với callback)
+
+    Phân tích xong sẽ tự động gọi POST http://linevision.asia/save_json
+    với kết quả phân tích + file_name (tên video .mp4 -> .json)
+
+    Parameters (form-data):
+        - video: Video file (required)
+        - court_points: JSON string của 12 điểm tọa độ sân (required)
+          Ví dụ: "[[361,139],[481,132],[560,130],[664,131],[981,153],[887,338],[714,641],[372,457],[288,408],[244,372],[169,324],[270,224]]"
+        - net_start_idx: Index điểm bắt đầu lưới (default: 2)
+        - net_end_idx: Index điểm kết thúc lưới (default: 8)
+        - ball_conf: Ball detection confidence (default: 0.3)
+        - person_conf: Person detection confidence (default: 0.3)
+        - angle_threshold: Angle threshold (default: 50)
+        - intersection_threshold: Intersection threshold (default: 50)
+
+    Returns:
+        JSON xác nhận đã nhận request và bắt đầu xử lý
+    """
+    try:
+        # Kiểm tra file có được upload không
+        if "video" not in request.files:
+            return jsonify({"error": "No video file provided"}), 400
+
+        file = request.files["video"]
+
+        if file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
+
+        if not allowed_file(file.filename):
+            return jsonify({
+                "error": f"Invalid file type. Allowed: {settings.allowed_extensions}"
+            }), 400
+
+        # Kiểm tra court_points
+        court_points_str = request.form.get("court_points")
+        if not court_points_str:
+            return jsonify({"error": "court_points is required"}), 400
+
+        try:
+            court_points = json.loads(court_points_str)
+            court_points = [tuple(p) for p in court_points]
+            if len(court_points) != 12:
+                return jsonify({"error": "court_points must have exactly 12 points"}), 400
+        except json.JSONDecodeError:
+            return jsonify({"error": "Invalid court_points JSON format"}), 400
+
+        # Lưu tên file gốc trước khi secure
+        original_filename = file.filename
+
+        # Lưu video upload
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4().hex}_{filename}"
+        video_path = os.path.join(settings.upload_folder, unique_filename)
+        file.save(video_path)
+
+        # Tạo thư mục output riêng cho request này
+        request_id = uuid.uuid4().hex
+        request_output_folder = os.path.join(settings.output_folder, request_id)
+        os.makedirs(request_output_folder, exist_ok=True)
+
+        # Lấy parameters từ request
+        net_start_idx = int(request.form.get("net_start_idx", 2))
+        net_end_idx = int(request.form.get("net_end_idx", 8))
+        ball_conf = float(request.form.get("ball_conf", 0.3))
+        person_conf = float(request.form.get("person_conf", 0.3))
+        angle_threshold = float(request.form.get("angle_threshold", 50))
+        intersection_threshold = float(request.form.get("intersection_threshold", 50))
+
+        # Chạy phân tích trong background thread
+        thread = threading.Thread(
+            target=process_player_analysis_async,
+            args=(
+                video_path, court_points, request_output_folder, request_id,
+                original_filename, net_start_idx, net_end_idx, ball_conf,
+                person_conf, angle_threshold, intersection_threshold
+            ),
+            daemon=True
+        )
+        thread.start()
+
+        # Tính file_name để trả về ngay
+        file_name = original_filename.rsplit('.', 1)[0] + '.json' if '.' in original_filename else original_filename + '.json'
+
+        return jsonify({
+            "status": "processing",
+            "message": "Video đang được xử lý. Kết quả sẽ được gửi đến callback khi hoàn thành.",
+            "request_id": request_id,
+            "file_name": file_name,
+            "callback_url": "http://linevision.asia/save_json"
+        }), 202
+
+    except Exception as e:
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 
