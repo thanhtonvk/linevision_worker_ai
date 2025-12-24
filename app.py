@@ -132,6 +132,24 @@ def serve_file(folder, filename):
         return jsonify({"error": str(e)}), 404
 
 
+@app.route("/outputs/<folder>/<filename>")
+def serve_output_file(folder, filename):
+    """
+    Serve files from outputs folder
+    URL: /outputs/{request_id}/{filename}
+    Query parameter: download=true to force download
+    """
+    try:
+        from flask import request
+
+        file_path = os.path.join(app.config["OUTPUT_FOLDER"], folder)
+        # Check if download parameter is set
+        download = request.args.get("download", "false").lower() == "true"
+        return send_from_directory(file_path, filename, as_attachment=download)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 404
+
+
 # =============================================================================
 # HOME PAGE
 # =============================================================================

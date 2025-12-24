@@ -96,6 +96,39 @@ def generate_file_url(filename, folder):
     return url_for("serve_file", folder=folder, filename=filename, _external=True)
 
 
+def convert_paths_to_urls(data, request_id, base_url):
+    """
+    Đệ quy convert tất cả các đường dẫn file trong dict thành full URL
+
+    Args:
+        data: Dict hoặc value cần convert
+        request_id: ID của request để tạo URL
+        base_url: Base URL của server (e.g., http://localhost:5000/)
+
+    Returns:
+        Dict với các path đã được convert thành URL
+    """
+    if isinstance(data, dict):
+        result = {}
+        for key, value in data.items():
+            result[key] = convert_paths_to_urls(value, request_id, base_url)
+        return result
+    elif isinstance(data, list):
+        return [convert_paths_to_urls(item, request_id, base_url) for item in data]
+    elif isinstance(data, str):
+        # Kiểm tra nếu là đường dẫn file (chứa outputs/ hoặc kết thúc bằng extension)
+        file_extensions = ('.png', '.jpg', '.jpeg', '.mp4', '.avi', '.mov', '.json')
+        if data.startswith(f"outputs/{request_id}/") or (
+            f"outputs/{request_id}" in data and data.lower().endswith(file_extensions)
+        ):
+            # Tạo full URL với đường dẫn /outputs/
+            full_url = f"{base_url.rstrip('/')}/{data}"
+            return full_url
+        return data
+    else:
+        return data
+
+
 # =============================================================================
 # API ENDPOINTS
 # =============================================================================
@@ -522,6 +555,9 @@ def player_analysis():
             datetime.now() + timedelta(hours=settings.cleanup_hours)
         ).isoformat()
 
+        # Convert tất cả paths thành full URLs
+        result = convert_paths_to_urls(result, request_id, settings.server_base_url)
+
         # Xóa video upload ngay sau khi xử lý xong
         try:
             if os.path.exists(video_path):
@@ -584,6 +620,9 @@ def process_player_analysis_async(video_path, court_points, request_output_folde
         # Thêm file_name (tên video với .mp4 thay thành .json)
         file_name = original_filename.rsplit('.', 1)[0] + '.json' if '.' in original_filename else original_filename + '.json'
         result["file_name"] = file_name
+
+        # Convert tất cả paths thành full URLs
+        result = convert_paths_to_urls(result, request_id, settings.server_base_url)
 
         print(f"[ASYNC] Phân tích hoàn thành cho request {request_id}")
 
