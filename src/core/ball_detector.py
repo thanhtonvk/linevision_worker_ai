@@ -40,10 +40,6 @@ class BallDetector:
         self.batch_size = batch_size  # Increased for faster processing with 12GB GPU
         self.conf = 0.7
 
-        # Enable half precision for faster inference
-        if torch.cuda.is_available():
-            self.model.to('cuda')
-            self.person_model.to('cuda')
 
     def read_video(self, video_path):
         """Đọc video và trả về danh sách frames"""
