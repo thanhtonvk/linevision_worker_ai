@@ -27,6 +27,9 @@ API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = int(os.getenv("API_PORT", "2803"))
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
+# Server base URL for file access (used in API responses)
+SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "https://durham-cooking-shoe-behaviour.trycloudflare.com")
+
 # File upload settings
 MAX_CONTENT_LENGTH = 500 * 1024 * 1024  # 500MB
 ALLOWED_EXTENSIONS = {"mp4", "avi", "mov", "mkv"}
@@ -60,6 +63,7 @@ class Settings:
         self.api_host = API_HOST
         self.api_port = API_PORT
         self.debug = DEBUG
+        self.server_base_url = SERVER_BASE_URL
         self.max_content_length = MAX_CONTENT_LENGTH
         self.allowed_extensions = ALLOWED_EXTENSIONS
         self.default_ball_conf = DEFAULT_BALL_CONF

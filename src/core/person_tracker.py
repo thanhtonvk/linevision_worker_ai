@@ -34,10 +34,6 @@ class PersonTracker:
         self.max_frame_height = settings.max_frame_height
         self.enable_frame_resize = settings.enable_frame_resize
 
-        # Move model to GPU if available
-        import torch
-        if torch.cuda.is_available():
-            self.person_model.to('cuda')
 
     def _resize_frame(self, frame):
         """
