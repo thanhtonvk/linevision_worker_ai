@@ -528,7 +528,7 @@ def player_analysis():
         person_conf = float(request.form.get("person_conf", settings.default_person_conf))
         angle_threshold = float(request.form.get("angle_threshold", settings.default_angle_threshold))
         intersection_threshold = float(request.form.get("intersection_threshold", settings.default_intersection_threshold))
-        cam_id = request.form.get("cam_id", "")
+        cam_id = request.form.get("court_id", "")
 
         # Base URL cho files (dạng: outputs/request_id)
         base_url = f"outputs/{request_id}"
@@ -563,7 +563,7 @@ def player_analysis():
         if cam_id:
             result["file_name"] = f"{cam_id}_{original_name}.json"
         else:
-            result["file_name"] = f"{original_name}.json
+            result["file_name"] = f"{original_name}.json"
         # Xóa video upload ngay sau khi xử lý xong
         try:
             if os.path.exists(video_path):
@@ -783,7 +783,7 @@ def player_analysis_async():
         person_conf = float(request.form.get("person_conf", 0.3))
         angle_threshold = float(request.form.get("angle_threshold", 50))
         intersection_threshold = float(request.form.get("intersection_threshold", 50))
-        cam_id = request.form.get("cam_id", "")
+        cam_id = request.form.get("court_id", "")
 
         # Chạy phân tích trong background thread
         thread = threading.Thread(
