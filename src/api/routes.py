@@ -495,6 +495,7 @@ def player_analysis():
         person_conf = float(request.form.get("person_conf", settings.default_person_conf))
         angle_threshold = float(request.form.get("angle_threshold", settings.default_angle_threshold))
         intersection_threshold = float(request.form.get("intersection_threshold", settings.default_intersection_threshold))
+        cam_id = request.form.get("cam_id", "")
 
         # Base URL cho files (dạng: outputs/request_id)
         base_url = f"outputs/{request_id}"
@@ -522,6 +523,13 @@ def player_analysis():
             datetime.now() + timedelta(hours=settings.cleanup_hours)
         ).isoformat()
 
+        # Tạo file_name với cam_id prefix
+        original_name = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        if cam_id:
+            result["file_name"] = f"{cam_id}_{original_name}.json"
+        else:
+            result["file_name"] = f"{original_name}.json"
+
         # Xóa video upload ngay sau khi xử lý xong
         try:
             if os.path.exists(video_path):
@@ -545,7 +553,7 @@ def player_analysis():
 
 def process_player_analysis_async(video_path, court_points, request_output_folder, request_id,
                                     original_filename, net_start_idx, net_end_idx, ball_conf,
-                                    person_conf, angle_threshold, intersection_threshold):
+                                    person_conf, angle_threshold, intersection_threshold, cam_id=""):
     """
     Xử lý phân tích người chơi trong background thread và gọi callback khi hoàn thành
     """
@@ -581,8 +589,12 @@ def process_player_analysis_async(video_path, court_points, request_output_folde
             datetime.now() + timedelta(hours=settings.cleanup_hours)
         ).isoformat()
 
-        # Thêm file_name (tên video với .mp4 thay thành .json)
-        file_name = original_filename.rsplit('.', 1)[0] + '.json' if '.' in original_filename else original_filename + '.json'
+        # Tạo file_name với cam_id prefix
+        original_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
+        if cam_id:
+            file_name = f"{cam_id}_{original_name}.json"
+        else:
+            file_name = f"{original_name}.json"
         result["file_name"] = file_name
 
         print(f"[ASYNC] Phân tích hoàn thành cho request {request_id}")
@@ -640,7 +652,11 @@ def process_player_analysis_async(video_path, court_points, request_output_folde
             pass
 
         # Gửi thông báo lỗi đến callback
-        file_name = original_filename.rsplit('.', 1)[0] + '.json' if '.' in original_filename else original_filename + '.json'
+        original_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
+        if cam_id:
+            file_name = f"{cam_id}_{original_name}.json"
+        else:
+            file_name = f"{original_name}.json"
         error_payload = {
             "file_name": file_name,
             "request_id": request_id,
@@ -730,6 +746,7 @@ def player_analysis_async():
         person_conf = float(request.form.get("person_conf", 0.3))
         angle_threshold = float(request.form.get("angle_threshold", 50))
         intersection_threshold = float(request.form.get("intersection_threshold", 50))
+        cam_id = request.form.get("cam_id", "")
 
         # Chạy phân tích trong background thread
         thread = threading.Thread(
@@ -737,14 +754,18 @@ def player_analysis_async():
             args=(
                 video_path, court_points, request_output_folder, request_id,
                 original_filename, net_start_idx, net_end_idx, ball_conf,
-                person_conf, angle_threshold, intersection_threshold
+                person_conf, angle_threshold, intersection_threshold, cam_id
             ),
             daemon=True
         )
         thread.start()
 
         # Tính file_name để trả về ngay
-        file_name = original_filename.rsplit('.', 1)[0] + '.json' if '.' in original_filename else original_filename + '.json'
+        original_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
+        if cam_id:
+            file_name = f"{cam_id}_{original_name}.json"
+        else:
+            file_name = f"{original_name}.json"
 
         return jsonify({
             "status": "processing",
