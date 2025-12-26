@@ -11,6 +11,7 @@ from datetime import datetime
 from .ball_detector import BallDetector
 from .person_tracker import PersonTracker
 from .player_stats_analyzer import PlayerStatsAnalyzer
+from .meme_analyzer import MemeAnalyzer
 from ..visualization.stats_visualizer import StatsVisualizer
 
 
@@ -46,6 +47,8 @@ class PlayerAnalysisService:
             person_model_path=person_model_path,
             batch_size=batch_size
         )
+        # MemeAnalyzer để phân tích và gán meme
+        self.meme_analyzer = MemeAnalyzer(meme_json_path="data/meme.json")
 
     def analyze(
         self,
@@ -184,6 +187,17 @@ class PlayerAnalysisService:
         rankings = stats_analyzer.calculate_player_ranking()
         timings["stats_analysis"] = time.time() - step_start
 
+        # 6.5. Phân tích meme cho các cú đánh
+        step_start = time.time()
+        meme_analysis = self.meme_analyzer.analyze_shots(
+            ball_positions=ball_positions,
+            ball_hits_by_person=dict(self.person_tracker.ball_hits_by_person),
+            player_stats=all_stats,
+            player_positions=player_positions,
+            fps=fps
+        )
+        timings["meme_analysis"] = time.time() - step_start
+
         # 7. Tạo visualization (chỉ heatmap và player image)
         step_start = time.time()
         visualizer = StatsVisualizer(court_points=court_points)
@@ -230,14 +244,16 @@ class PlayerAnalysisService:
         if create_highlights:
             step_start = time.time()
 
-            # Video highlight cho từng player
+            # Video highlight cho từng player (có chèn meme)
             highlight_videos = self.person_tracker.create_player_highlight_videos(
                 frames=frames,
                 output_folder=output_folder,
                 fps=fps,
                 min_frames=30,
                 padding_frames=15,
-                base_url=base_url
+                base_url=base_url,
+                meme_analyzer=self.meme_analyzer,
+                meme_analysis=meme_analysis
             )
 
             # Video highlight tổng hợp
@@ -254,13 +270,15 @@ class PlayerAnalysisService:
                 output_files["combined_highlight"] = f"{base_url}/combined_highlight.mp4"
                 output_files["combined_highlight_info"] = combined_info
 
-            # Thêm highlight video paths vào player_images
+            # Thêm highlight clips vào player_images
             for player_id, highlight_info in highlight_videos.items():
                 if player_id in player_images:
-                    player_images[player_id]["highlight_video"] = highlight_info.get("video_path", "")
-                    player_images[player_id]["highlight_info"] = {
-                        "hit_count": highlight_info.get("hit_count", 0),
-                        "duration_seconds": highlight_info.get("duration_seconds", 0)
+                    # highlight_info giờ có structure: {"highlights": [...], "total_clips": N, "total_hits": M}
+                    player_images[player_id]["highlight_clips"] = highlight_info.get("highlights", [])
+                    player_images[player_id]["highlight_summary"] = {
+                        "total_clips": highlight_info.get("total_clips", 0),
+                        "total_hits": highlight_info.get("total_hits", 0),
+                        "total_duration_seconds": highlight_info.get("total_duration_seconds", 0)
                     }
 
             timings["highlight_videos"] = time.time() - step_start
@@ -308,6 +326,9 @@ class PlayerAnalysisService:
 
         # Chi tiết từng người chơi
         for player_id, stats in all_stats.items():
+            # Lấy meme info cho player này
+            player_meme = meme_analysis.get(player_id, {})
+
             player_data = {
                 "player_id": player_id,
                 "accuracy": stats.get("accuracy", {}),
@@ -336,7 +357,11 @@ class PlayerAnalysisService:
                 },
                 "ranking": stats.get("ranking", {}),
                 "images": player_images.get(player_id, {}),
-                "highlight": highlight_videos.get(player_id, {})
+                "highlight": highlight_videos.get(player_id, {}),
+                "memes": [
+                    {"name": m.get("name", ""), "description": m.get("description", "")}
+                    for m in player_meme.get("memes", [])
+                ]
             }
             result["players"][f"player_{player_id}"] = player_data
 

@@ -283,9 +283,15 @@ class PersonTracker:
         fps=30,
         min_frames=30,
         padding_frames=15,
-        base_url=""
+        base_url="",
+        meme_analyzer=None,
+        meme_analysis=None
     ):
-        """Tạo video highlight cho từng player
+        """Tạo danh sách video highlight cho từng player (các cú đánh liên tục)
+
+        Mỗi highlight là 1 chuỗi cú đánh liên tục. Nếu highlight < 10s thì mở rộng
+        thêm frames trước/sau để đảm bảo >= 10s.
+        Có thể chèn meme overlay nếu có meme_analyzer và meme_analysis.
 
         Args:
             frames: List of all video frames
@@ -294,117 +300,192 @@ class PersonTracker:
             min_frames: Số frame tối thiểu để tạo highlight
             padding_frames: Số frame thêm trước/sau mỗi hit
             base_url: URL cơ sở cho file paths
+            meme_analyzer: MemeAnalyzer instance để overlay meme
+            meme_analysis: Dict kết quả phân tích meme cho mỗi player
 
         Returns:
-            Dict {player_id: {"video_path": path, "hit_count": count, ...}}
+            Dict {player_id: {"highlights": [list of highlight clips], "total_hits": count}}
         """
         os.makedirs(output_folder, exist_ok=True)
         highlight_results = {}
+
+        MIN_DURATION_SECONDS = 10  # Thời lượng tối thiểu cho mỗi clip
+        min_duration_frames = int(MIN_DURATION_SECONDS * fps)
 
         for person_id, hits in self.ball_hits_by_person.items():
             if len(hits) == 0:
                 continue
 
-            # Thu thập tất cả frame indices cần cho highlight
-            highlight_frames_set = set()
+            # Sắp xếp hits theo frame
+            sorted_hits = sorted(hits, key=lambda h: h["frame"])
 
-            for hit in hits:
-                hit_frame = hit["frame"]
-                # Thêm frames xung quanh mỗi hit
-                start_frame = max(0, hit_frame - padding_frames)
-                end_frame = min(len(frames), hit_frame + padding_frames + 1)
+            # Nhóm hits thành các sequences (cú đánh liên tục)
+            # Hai hits được coi là liên tục nếu khoảng cách < 3 giây
+            max_gap_frames = int(3 * fps)
+            sequences = []
+            current_sequence = [sorted_hits[0]]
 
-                for f in range(start_frame, end_frame):
-                    highlight_frames_set.add(f)
+            for i in range(1, len(sorted_hits)):
+                if sorted_hits[i]["frame"] - sorted_hits[i-1]["frame"] <= max_gap_frames:
+                    current_sequence.append(sorted_hits[i])
+                else:
+                    sequences.append(current_sequence)
+                    current_sequence = [sorted_hits[i]]
+            sequences.append(current_sequence)
 
-            # Chuyển thành list và sort
-            highlight_frame_indices = sorted(list(highlight_frames_set))
+            # Tạo highlight cho mỗi sequence
+            highlight_clips = []
 
-            if len(highlight_frame_indices) < min_frames:
-                continue
+            for seq_idx, sequence in enumerate(sequences):
+                if len(sequence) == 0:
+                    continue
 
-            # Tạo video highlight
-            output_path = os.path.join(output_folder, f"player_{person_id}_highlight.mp4")
+                # Thu thập frames cho sequence này
+                highlight_frames_set = set()
 
-            # Lấy kích thước từ frame đầu tiên
-            first_frame = frames[highlight_frame_indices[0]]
-            height, width = first_frame.shape[:2]
+                for hit in sequence:
+                    hit_frame = hit["frame"]
+                    start_frame = max(0, hit_frame - padding_frames)
+                    end_frame = min(len(frames), hit_frame + padding_frames + 1)
 
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+                    for f in range(start_frame, end_frame):
+                        highlight_frames_set.add(f)
 
-            try:
-                for frame_idx in highlight_frame_indices:
-                    frame = frames[frame_idx].copy()
+                highlight_frame_indices = sorted(list(highlight_frames_set))
 
-                    # Vẽ bbox của player lên frame
-                    for pos_data in self.player_positions.get(person_id, []):
-                        if pos_data[0] == frame_idx:
-                            # Tìm bbox tại frame này
-                            if person_id in self.tracked_persons:
-                                bbox = None
-                                # Tìm trong hits
-                                for hit in hits:
-                                    if hit["frame"] == frame_idx:
-                                        bbox = hit["person_bbox"]
-                                        break
+                if len(highlight_frame_indices) < min_frames:
+                    continue
 
-                                if bbox:
-                                    x1, y1, x2, y2 = bbox
-                                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                                    cv2.putText(
-                                        frame,
-                                        f"Player {person_id}",
-                                        (x1, y1 - 10),
-                                        cv2.FONT_HERSHEY_SIMPLEX,
-                                        0.7,
-                                        (0, 255, 0),
-                                        2
+                # Kiểm tra nếu < 10s thì mở rộng
+                if len(highlight_frame_indices) < min_duration_frames:
+                    needed_frames = min_duration_frames - len(highlight_frame_indices)
+                    extend_before = needed_frames // 2
+                    extend_after = needed_frames - extend_before
+
+                    first_frame = highlight_frame_indices[0]
+                    last_frame = highlight_frame_indices[-1]
+
+                    # Mở rộng về trước
+                    new_start = max(0, first_frame - extend_before)
+                    for f in range(new_start, first_frame):
+                        highlight_frames_set.add(f)
+
+                    # Mở rộng về sau
+                    new_end = min(len(frames), last_frame + extend_after + 1)
+                    for f in range(last_frame + 1, new_end):
+                        highlight_frames_set.add(f)
+
+                    highlight_frame_indices = sorted(list(highlight_frames_set))
+
+                # Lấy kích thước từ frame đầu tiên
+                first_frame = frames[highlight_frame_indices[0]]
+                height, width = first_frame.shape[:2]
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+                # === 1. Tạo video HIGHLIGHT (không có meme) ===
+                highlight_path = os.path.join(output_folder, f"player_{person_id}_highlight_{seq_idx + 1}.mp4")
+                out_highlight = cv2.VideoWriter(highlight_path, fourcc, fps, (width, height))
+
+                # === 2. Chuẩn bị video MEME (có meme overlay) ===
+                meme_path = os.path.join(output_folder, f"player_{person_id}_meme_{seq_idx + 1}.mp4")
+                out_meme = None
+                meme_overlays = []
+                clip_memes_used = []
+                MEME_DISPLAY_SECONDS = 3
+                meme_display_frames = int(MEME_DISPLAY_SECONDS * fps)
+
+                if meme_analyzer and meme_analysis and person_id in meme_analysis:
+                    player_memes = meme_analysis[person_id].get("memes", [])
+                    for meme_info in player_memes:
+                        hit_frame = meme_info.get("hit_frame")
+                        if hit_frame is not None and hit_frame in highlight_frame_indices:
+                            meme_image = meme_analyzer.download_meme_image(meme_info.get("image_url", ""))
+                            if meme_image is not None:
+                                start_f = hit_frame
+                                end_f = min(hit_frame + meme_display_frames, highlight_frame_indices[-1])
+                                meme_overlays.append((start_f, end_f, meme_image, meme_info))
+                                clip_memes_used.append({
+                                    "name": meme_info.get("name", ""),
+                                    "description": meme_info.get("description", "")
+                                })
+
+                # Chỉ tạo video meme nếu có meme
+                if meme_overlays:
+                    out_meme = cv2.VideoWriter(meme_path, fourcc, fps, (width, height))
+
+                try:
+                    for frame_idx in highlight_frame_indices:
+                        frame = frames[frame_idx].copy()
+
+                        # Vẽ bbox của player lên frame
+                        for pos_data in self.player_positions.get(person_id, []):
+                            if pos_data[0] == frame_idx:
+                                if person_id in self.tracked_persons:
+                                    bbox = None
+                                    for hit in sequence:
+                                        if hit["frame"] == frame_idx:
+                                            bbox = hit["person_bbox"]
+                                            break
+                                    if bbox:
+                                        x1, y1, x2, y2 = bbox
+                                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                        cv2.putText(frame, f"Player {person_id}", (x1, y1 - 10),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                                break
+
+                        # Đánh dấu frame hit
+                        for hit in sequence:
+                            if hit["frame"] == frame_idx:
+                                ball_pos = hit["ball_pos"]
+                                cv2.circle(frame, (int(ball_pos[0]), int(ball_pos[1])), 15, (0, 0, 255), 3)
+                                cv2.putText(frame, "HIT!", (int(ball_pos[0]) + 20, int(ball_pos[1])),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                                break
+
+                        # Ghi vào video highlight (không có meme)
+                        out_highlight.write(frame)
+
+                        # Ghi vào video meme (có overlay meme)
+                        if out_meme is not None:
+                            meme_frame = frame.copy()
+                            for start_f, end_f, meme_img, meme_info in meme_overlays:
+                                if start_f <= frame_idx <= end_f:
+                                    meme_frame = meme_analyzer.overlay_meme_on_frame(
+                                        meme_frame, meme_img, position="top-right", scale=0.25, opacity=0.9
                                     )
-                            break
+                                    cv2.putText(meme_frame, meme_info.get("name", ""), (width - 300, 50),
+                                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                                    break
+                            out_meme.write(meme_frame)
 
-                    # Đánh dấu frame hit
-                    for hit in hits:
-                        if hit["frame"] == frame_idx:
-                            # Vẽ circle tại vị trí bóng
-                            ball_pos = hit["ball_pos"]
-                            cv2.circle(
-                                frame,
-                                (int(ball_pos[0]), int(ball_pos[1])),
-                                15,
-                                (0, 0, 255),
-                                3
-                            )
-                            cv2.putText(
-                                frame,
-                                "HIT!",
-                                (int(ball_pos[0]) + 20, int(ball_pos[1])),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                1,
-                                (0, 0, 255),
-                                2
-                            )
-                            break
+                finally:
+                    out_highlight.release()
+                    if out_meme is not None:
+                        out_meme.release()
 
-                    out.write(frame)
+                # Thông tin clip
+                clip_info = {
+                    "highlight_video": f"{base_url}/player_{person_id}_highlight_{seq_idx + 1}.mp4" if base_url else highlight_path,
+                    "meme_video": (f"{base_url}/player_{person_id}_meme_{seq_idx + 1}.mp4" if base_url else meme_path) if meme_overlays else None,
+                    "clip_index": seq_idx + 1,
+                    "hit_count": len(sequence),
+                    "total_frames": len(highlight_frame_indices),
+                    "duration_seconds": round(len(highlight_frame_indices) / fps, 2),
+                    "start_frame": highlight_frame_indices[0],
+                    "end_frame": highlight_frame_indices[-1],
+                    "hits": [{"frame": h["frame"], "ball_pos": h["ball_pos"]} for h in sequence],
+                    "memes": clip_memes_used
+                }
+                highlight_clips.append(clip_info)
 
-            finally:
-                out.release()
-
-            # Thông tin highlight
-            highlight_results[person_id] = {
-                "video_path": f"{base_url}/player_{person_id}_highlight.mp4" if base_url else output_path,
-                "hit_count": len(hits),
-                "total_frames": len(highlight_frame_indices),
-                "duration_seconds": round(len(highlight_frame_indices) / fps, 2),
-                "hits": [
-                    {
-                        "frame": h["frame"],
-                        "ball_pos": h["ball_pos"]
-                    }
-                    for h in hits
-                ]
-            }
+            # Thông tin tổng hợp cho player
+            if highlight_clips:
+                highlight_results[person_id] = {
+                    "highlights": highlight_clips,
+                    "total_clips": len(highlight_clips),
+                    "total_hits": len(hits),
+                    "total_duration_seconds": round(sum(c["duration_seconds"] for c in highlight_clips), 2)
+                }
 
         return highlight_results
 
