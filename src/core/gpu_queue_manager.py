@@ -83,10 +83,16 @@ class GPUQueueManager:
 
     def _worker(self):
         """Worker thread để xử lý tasks từ queue"""
+        worker_name = threading.current_thread().name
+        print(f"[GPU Queue] {worker_name} started and waiting for tasks...")
+
         while self.running:
             try:
-                # Lấy task từ queue (blocking)
-                task = self.task_queue.get(timeout=1.0)
+                # Lấy task từ queue (blocking với timeout)
+                try:
+                    task = self.task_queue.get(timeout=1.0)
+                except queue.Empty:
+                    continue
 
                 with self.active_lock:
                     self.active_tasks += 1
@@ -96,7 +102,7 @@ class GPUQueueManager:
                     task.status = TaskStatus.PROCESSING
                     task.started_at = time.time()
 
-                    print(f"[GPU Queue] Starting task {task.task_id}, queue size: {self.task_queue.qsize()}")
+                    print(f"[GPU Queue] {worker_name} starting task {task.task_id}, remaining in queue: {self.task_queue.qsize()}")
 
                     # Chạy task
                     result = task.func(*task.args, **task.kwargs)
@@ -138,10 +144,9 @@ class GPUQueueManager:
 
                     self.task_queue.task_done()
 
-            except queue.Empty:
-                continue
             except Exception as e:
-                print(f"[GPU Queue] Worker error: {e}")
+                print(f"[GPU Queue] {worker_name} error: {e}")
+                print(traceback.format_exc())
 
     def submit(
         self,
@@ -242,5 +247,25 @@ class GPUQueueManager:
         print("[GPU Queue] Shutdown complete")
 
 
-# Global instance - chỉ cho phép 1 task GPU tại một thời điểm
-gpu_queue = GPUQueueManager(max_concurrent=1)
+# Global instance - lazy initialization
+_gpu_queue_instance = None
+_gpu_queue_lock = threading.Lock()
+
+
+def get_gpu_queue(max_concurrent: int = 1) -> GPUQueueManager:
+    """Lấy GPU queue instance (lazy initialization)"""
+    global _gpu_queue_instance
+    if _gpu_queue_instance is None:
+        with _gpu_queue_lock:
+            if _gpu_queue_instance is None:
+                _gpu_queue_instance = GPUQueueManager(max_concurrent=max_concurrent)
+    return _gpu_queue_instance
+
+
+# Backward compatibility - tạo property-like access
+class _GPUQueueProxy:
+    """Proxy để lazy load GPU queue"""
+    def __getattr__(self, name):
+        return getattr(get_gpu_queue(), name)
+
+gpu_queue = _GPUQueueProxy()

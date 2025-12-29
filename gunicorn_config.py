@@ -1,8 +1,9 @@
 # =============================================================================
 # GUNICORN CONFIGURATION
 # =============================================================================
+# IMPORTANT: Chỉ dùng 1 worker để đảm bảo GPU queue hoạt động đúng
+# GPU tasks cần được xử lý tuần tự để tránh OOM
 
-import multiprocessing
 import os
 
 # Server socket
@@ -10,8 +11,13 @@ bind = f"0.0.0.0:{os.getenv('API_PORT', '2803')}"
 backlog = 2048
 
 # Worker processes
-workers = multiprocessing.cpu_count() * 2 + 1  # Recommended formula
-worker_class = "sync"
+# QUAN TRỌNG: Chỉ dùng 1 worker vì:
+# 1. GPU queue cần được share giữa các requests
+# 2. Chỉ có 16GB GPU RAM, không thể chạy nhiều tasks đồng thời
+# 3. Dùng threads thay vì processes để xử lý concurrent requests
+workers = 1
+threads = 4  # Xử lý 4 requests đồng thời trong cùng 1 process
+worker_class = "gthread"  # Threaded worker để hỗ trợ concurrent requests
 worker_connections = 1000
 timeout = 3000  # 50 minutes - increased timeout for long video processing
 keepalive = 2
@@ -41,7 +47,8 @@ tmp_upload_dir = None
 # certfile = None
 
 # Preload app để tiết kiệm memory
-preload_app = True
+# Với 1 worker, preload không cần thiết nhưng vẫn giữ để load models 1 lần
+preload_app = False  # Tắt preload để đảm bảo threads được khởi tạo đúng
 
 # Restart workers sau N requests để tránh memory leak
 max_requests = 1000
