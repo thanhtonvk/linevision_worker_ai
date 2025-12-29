@@ -7,6 +7,7 @@ from werkzeug.utils import secure_filename
 from src.core.tennis_analysis_module import TennisAnalysisModule
 from src.core.var_detector import VarDetector
 from src.core.player_analysis_service import PlayerAnalysisService
+from src.core.gpu_queue_manager import gpu_queue
 from config.settings import settings
 import cv2
 import os
@@ -37,7 +38,7 @@ def create_player_analysis_service():
     return PlayerAnalysisService(
         ball_model_path=settings.ball_model_path,
         person_model_path=settings.person_model_path,
-        batch_size=16
+        batch_size=8  # Reduced from 16 to 8 for memory safety
     )
 
 
@@ -783,19 +784,22 @@ def player_analysis_async():
         person_conf = float(request.form.get("person_conf", 0.3))
         angle_threshold = float(request.form.get("angle_threshold", 50))
         intersection_threshold = float(request.form.get("intersection_threshold", 50))
-        cam_id = request.form.get("court_id", "")
+        cam_id = request.form.get("cam_id", "")
 
-        # Chạy phân tích trong background thread
-        thread = threading.Thread(
-            target=process_player_analysis_async,
+        # Submit vào GPU queue thay vì tạo thread trực tiếp
+        # Queue sẽ đảm bảo chỉ 1 task chạy tại một thời điểm
+        gpu_queue.submit(
+            task_id=request_id,
+            func=process_player_analysis_async,
             args=(
                 video_path, court_points, request_output_folder, request_id,
                 original_filename, net_start_idx, net_end_idx, ball_conf,
                 person_conf, angle_threshold, intersection_threshold, cam_id
-            ),
-            daemon=True
+            )
         )
-        thread.start()
+
+        # Lấy queue status
+        queue_status = gpu_queue.get_queue_status()
 
         # Tính file_name để trả về ngay
         original_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
@@ -805,15 +809,54 @@ def player_analysis_async():
             file_name = f"{original_name}.json"
 
         return jsonify({
-            "status": "processing",
-            "message": "Video đang được xử lý. Kết quả sẽ được gửi đến callback khi hoàn thành.",
+            "status": "queued",
+            "message": f"Video đã được thêm vào hàng đợi. Vị trí: {queue_status['queue_size']}",
             "request_id": request_id,
             "file_name": file_name,
+            "queue_position": queue_status['queue_size'],
+            "queue_status": queue_status,
             "callback_url": "http://linevision.asia/save_json"
         }), 202
 
     except Exception as e:
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
+
+@api_bp.route("/api/gpu-queue-status", methods=["GET"])
+def get_gpu_queue_status():
+    """
+    Lấy trạng thái của GPU queue
+
+    Returns:
+        JSON với thông tin queue: max_concurrent, active_tasks, queue_size, etc.
+    """
+    status = gpu_queue.get_queue_status()
+    return jsonify(status), 200
+
+
+@api_bp.route("/api/task-status/<task_id>", methods=["GET"])
+def get_task_status(task_id):
+    """
+    Lấy trạng thái của một task cụ thể
+
+    Args:
+        task_id: ID của task (request_id)
+
+    Returns:
+        JSON với thông tin task
+    """
+    task = gpu_queue.get_task(task_id)
+    if task is None:
+        return jsonify({"error": "Task not found"}), 404
+
+    return jsonify({
+        "task_id": task.task_id,
+        "status": task.status.value,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "error": task.error
+    }), 200
 
 
 def create_api_blueprint():

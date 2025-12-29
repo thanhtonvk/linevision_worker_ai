@@ -6,14 +6,25 @@
 import cv2
 import os
 import time
+import gc
 from typing import List, Tuple
 from datetime import datetime
+
+import torch
 
 from .ball_detector import BallDetector
 from .person_tracker import PersonTracker
 from .player_stats_analyzer import PlayerStatsAnalyzer
 from .meme_analyzer import MemeAnalyzer
 from ..visualization.stats_visualizer import StatsVisualizer
+
+
+def clear_cuda_memory():
+    """Clear CUDA memory để tránh OOM"""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    gc.collect()
 
 
 class PlayerAnalysisService:
@@ -27,7 +38,7 @@ class PlayerAnalysisService:
         self,
         ball_model_path: str = "models/ball_best.pt",
         person_model_path: str = "yolo11m.pt",
-        batch_size: int = 16
+        batch_size: int = 8  # Reduced from 16 to 8 for memory safety
     ):
         """
         Khởi tạo service
@@ -35,19 +46,30 @@ class PlayerAnalysisService:
         Args:
             ball_model_path: Đường dẫn model detect bóng
             person_model_path: Đường dẫn model detect người
-            batch_size: Batch size for inference (default 16 for 12GB GPU)
+            batch_size: Batch size for inference (default 8 for memory safety)
         """
+        # Clear CUDA memory before loading models
+        clear_cuda_memory()
+
         self.batch_size = batch_size
         self.ball_detector = BallDetector(
             model_path=ball_model_path,
             person_model_path=person_model_path,
             batch_size=batch_size
         )
+
+        # Clear after loading ball detector
+        clear_cuda_memory()
+
         # PersonTracker sử dụng yolo11m cho person detection
         self.person_tracker = PersonTracker(
             person_model_path=person_model_path,
             batch_size=batch_size
         )
+
+        # Clear after loading person tracker
+        clear_cuda_memory()
+
         # MemeAnalyzer để phân tích và gán meme
         self.meme_analyzer = MemeAnalyzer(meme_json_path="data/meme.json")
 
@@ -174,6 +196,9 @@ class PlayerAnalysisService:
 
         print(f"[INFO] Video: {total_frames} frames, {fps} FPS, {video_info['width']}x{video_info['height']}")
 
+        # Clear CUDA memory trước khi bắt đầu
+        clear_cuda_memory()
+
         # 2. PASS 1: Detect ball và person theo batch (không giữ frames trong RAM)
         step_start = time.time()
 
@@ -237,8 +262,12 @@ class PlayerAnalysisService:
 
             frame_idx += len(batch_frames)
 
-            # Giải phóng batch frames
+            # Giải phóng batch frames và clear CUDA memory
             del batch_frames
+
+            # Clear CUDA cache mỗi 10 batches để tránh OOM
+            if (frame_idx // self.batch_size) % 10 == 0:
+                clear_cuda_memory()
 
             if frame_idx % 500 == 0:
                 print(f"[PROGRESS] Processed {frame_idx}/{total_frames} frames...")
