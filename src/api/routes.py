@@ -587,7 +587,7 @@ def player_analysis():
 
 
 def process_player_analysis_async(video_path, court_points, request_output_folder, request_id,
-                                    original_filename, net_start_idx, net_end_idx, ball_conf,
+                                    net_start_idx, net_end_idx, ball_conf,
                                     person_conf, angle_threshold, intersection_threshold, cam_id=""):
     """
     Xử lý phân tích người chơi trong background thread và gọi callback khi hoàn thành
@@ -624,18 +624,20 @@ def process_player_analysis_async(video_path, court_points, request_output_folde
             datetime.now() + timedelta(hours=settings.cleanup_hours)
         ).isoformat()
 
-        # Tạo file_name với cam_id prefix
-        original_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
+        # Tạo file_name với format: courtid_timestamp.json
+        # timestamp là tên file video (không có đuôi .mp4)
+        video_basename = os.path.basename(video_path)
+        video_timestamp = os.path.splitext(video_basename)[0]  # Bỏ đuôi .mp4
         if cam_id:
-            file_name = f"{cam_id}_{original_name}.json"
+            file_name = f"{cam_id}_{video_timestamp}.json"
         else:
-            file_name = f"{original_name}.json"
+            file_name = f"{video_timestamp}.json"
         result["file_name"] = file_name
 
         # Convert tất cả paths thành full URLs
         result = convert_paths_to_urls(result, request_id, settings.server_base_url)
 
-        print(f"[ASYNC] Phân tích hoàn thành cho request {request_id}")
+        print(f"[ASYNC] Phân tích hoàn thành cho request {request_id}, file_name: {file_name}")
 
         # Xóa video upload sau khi xử lý xong
         try:
@@ -689,12 +691,14 @@ def process_player_analysis_async(video_path, court_points, request_output_folde
         except:
             pass
 
-        # Gửi thông báo lỗi đến callback
-        original_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
+        # Gửi thông báo lỗi đến callback với format: courtid_timestamp.json
+        # timestamp là tên file video (không có đuôi .mp4)
+        video_basename = os.path.basename(video_path)
+        video_timestamp = os.path.splitext(video_basename)[0]  # Bỏ đuôi .mp4
         if cam_id:
-            file_name = f"{cam_id}_{original_name}.json"
+            file_name = f"{cam_id}_{video_timestamp}.json"
         else:
-            file_name = f"{original_name}.json"
+            file_name = f"{video_timestamp}.json"
         error_payload = {
             "file_name": file_name,
             "request_id": request_id,
@@ -763,9 +767,6 @@ def player_analysis_async():
         except json.JSONDecodeError:
             return jsonify({"error": "Invalid court_points JSON format"}), 400
 
-        # Lưu tên file gốc trước khi secure
-        original_filename = file.filename
-
         # Lưu video upload
         filename = secure_filename(file.filename)
         unique_filename = f"{uuid.uuid4().hex}_{filename}"
@@ -793,7 +794,7 @@ def player_analysis_async():
             func=process_player_analysis_async,
             args=(
                 video_path, court_points, request_output_folder, request_id,
-                original_filename, net_start_idx, net_end_idx, ball_conf,
+                net_start_idx, net_end_idx, ball_conf,
                 person_conf, angle_threshold, intersection_threshold, cam_id
             )
         )
@@ -801,18 +802,14 @@ def player_analysis_async():
         # Lấy queue status
         queue_status = gpu_queue.get_queue_status()
 
-        # Tính file_name để trả về ngay
-        original_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
-        if cam_id:
-            file_name = f"{cam_id}_{original_name}.json"
-        else:
-            file_name = f"{original_name}.json"
+        # file_name sẽ được tạo khi xử lý xong với format: courtid_timestamp.json
+        # Ở đây chỉ trả về thông tin queue, không trả về file_name vì chưa biết timestamp cuối
 
         return jsonify({
             "status": "queued",
             "message": f"Video đã được thêm vào hàng đợi. Vị trí: {queue_status['queue_size']}",
             "request_id": request_id,
-            "file_name": file_name,
+            "cam_id": cam_id,
             "queue_position": queue_status['queue_size'],
             "queue_status": queue_status,
             "callback_url": "http://linevision.asia/save_json"

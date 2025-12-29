@@ -252,8 +252,12 @@ _gpu_queue_instance = None
 _gpu_queue_lock = threading.Lock()
 
 
-def get_gpu_queue(max_concurrent: int = 1) -> GPUQueueManager:
-    """Lấy GPU queue instance (lazy initialization)"""
+def get_gpu_queue(max_concurrent: int = 2) -> GPUQueueManager:
+    """Lấy GPU queue instance (lazy initialization)
+
+    Args:
+        max_concurrent: Số task tối đa chạy đồng thời (default: 2)
+    """
     global _gpu_queue_instance
     if _gpu_queue_instance is None:
         with _gpu_queue_lock:
