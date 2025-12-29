@@ -28,7 +28,7 @@ API_PORT = int(os.getenv("API_PORT", "2803"))
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 
 # Server base URL for file access (used in API responses)
-SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "https://durham-cooking-shoe-behaviour.trycloudflare.com")
+SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "https://pretyphoid-cyndy-goatishly.ngrok-free.dev")
 
 # File upload settings
 MAX_CONTENT_LENGTH = 500 * 1024 * 1024  # 500MB
