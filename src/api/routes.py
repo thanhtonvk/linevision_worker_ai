@@ -628,10 +628,8 @@ def process_player_analysis_async(video_path, court_points, request_output_folde
         # timestamp là tên file video (không có đuôi .mp4)
         video_basename = os.path.basename(video_path)
         video_timestamp = os.path.splitext(video_basename)[0]  # Bỏ đuôi .mp4
-        if cam_id:
-            file_name = f"{cam_id}_{video_timestamp}.json"
-        else:
-            file_name = f"{video_timestamp}.json"
+        file_name = f"{cam_id}_{video_timestamp}.json"
+        print(file_name)
         result["file_name"] = file_name
 
         # Convert tất cả paths thành full URLs

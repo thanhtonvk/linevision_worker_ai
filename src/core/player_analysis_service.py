@@ -306,6 +306,10 @@ class PlayerAnalysisService:
         )
         timings["direction_analysis"] = time.time() - step_start
 
+        # Log số lượng direction changes
+        hits_detected = sum(1 for f in direction_flags if f == 2)
+        print(f"[INFO] Direction analysis: {hits_detected} potential hits detected (angle_threshold={angle_threshold}, intersection_threshold={intersection_threshold})")
+
         # 5. Cập nhật lại hits với direction flags
         step_start = time.time()
         self.person_tracker.ball_hits_by_person.clear()
@@ -313,15 +317,26 @@ class PlayerAnalysisService:
             if ball_positions[frame_idx] != (-1, -1) and frame_idx < len(all_person_detections):
                 tracked_data = []
                 for det in all_person_detections[frame_idx]:
-                    # Tìm tracked person tương ứng
+                    # Tìm tracked person có bbox gần nhất với detection này
+                    best_match_id = None
+                    best_iou = 0.3  # Minimum IoU threshold
+
                     for person_id, person_data in self.person_tracker.tracked_persons.items():
                         if person_data.get("first_seen", 0) <= frame_idx <= person_data.get("last_seen", 0):
-                            tracked_data.append({
-                                "person_id": person_id,
+                            iou = self.person_tracker._calculate_iou(det["bbox"], person_data.get("bbox", (0,0,0,0)))
+                            if iou > best_iou:
+                                best_iou = iou
+                                best_match_id = person_id
+
+                    if best_match_id is not None:
+                        # Format đúng cho _check_ball_person_hits
+                        tracked_data.append({
+                            "person_id": best_match_id,
+                            "person": {
                                 "bbox": det["bbox"],
                                 "conf": det["conf"]
-                            })
-                            break
+                            }
+                        })
 
                 self.person_tracker._check_ball_person_hits(
                     ball_positions[frame_idx],
@@ -332,6 +347,11 @@ class PlayerAnalysisService:
 
         player_positions = self.person_tracker.get_player_positions()
         timings["hits_update"] = time.time() - step_start
+
+        # Log hits by person
+        total_hits = sum(len(hits) for hits in self.person_tracker.ball_hits_by_person.values())
+        print(f"[INFO] Hits registered: {total_hits} hits across {len(self.person_tracker.ball_hits_by_person)} players")
+        print(f"[INFO] Tracked persons: {len(self.person_tracker.tracked_persons)}, Player positions: {len(player_positions)}")
 
         # 6. Phân tích chỉ số
         step_start = time.time()
@@ -584,7 +604,8 @@ class PlayerAnalysisService:
 
                         dist = math.sqrt((curr_x - px)**2 + (curr_y - py)**2)
                         if dist < intersection_threshold:
-                            direction_flags[i] = 1
+                            # direction_flag = 2 nghĩa là bóng được đánh bởi người
+                            direction_flags[i] = 2
                             break
 
         return direction_flags
