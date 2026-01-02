@@ -44,6 +44,9 @@ DEFAULT_COURT_BOUNDS = (100, 100, 400, 500)
 # Cleanup settings
 CLEANUP_HOURS = 3  # Delete files older than 3 hours
 
+# Video duration limit
+MAX_VIDEO_DURATION_SECONDS = 300  # 5 minutes max video duration
+
 # Memory optimization settings
 MAX_FRAME_HEIGHT = 480  # Maximum frame height for inference - reduced for speed
 ENABLE_FRAME_RESIZE = True  # Enable frame resizing before inference
@@ -72,6 +75,7 @@ class Settings:
         self.default_intersection_threshold = DEFAULT_INTERSECTION_THRESHOLD
         self.default_court_bounds = DEFAULT_COURT_BOUNDS
         self.cleanup_hours = CLEANUP_HOURS
+        self.max_video_duration_seconds = MAX_VIDEO_DURATION_SECONDS
         self.max_frame_height = MAX_FRAME_HEIGHT
         self.enable_frame_resize = ENABLE_FRAME_RESIZE
 
