@@ -50,7 +50,7 @@ class PoseEstimator:
         person_model_path: str = "yolo11m.pt",
         pose_model_path: str = "yolo11m-pose.pt",
         batch_size: int = 8,
-        conf_threshold: float = 0.5
+        conf_threshold: float = 0.3
     ):
         """
         Initialize PoseEstimator
@@ -98,7 +98,7 @@ class PoseEstimator:
     def detect_persons_with_pose(
         self,
         frames: List[np.ndarray],
-        person_conf: float = 0.6
+        person_conf: float = 0.3
     ) -> List[List[Dict]]:
         """
         Detect persons and get pose keypoints for each
@@ -356,7 +356,7 @@ class PoseEstimator:
             results = self.pose_model.predict(
                 person_crop,
                 verbose=False,
-                conf=0.5,
+                conf=0.3,
                 half=True
             )
         except Exception as e:

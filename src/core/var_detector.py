@@ -56,7 +56,7 @@ def gpu_memory_full(threshold_ratio: float = 0.4):
 
 
 class VarDetector:
-    def __init__(self, model_path, conf=0.8, batch_size=4):
+    def __init__(self, model_path, conf=0.3, batch_size=4):
         self.model = YOLO(model_path)
         self.conf = conf
         self.batch_size = batch_size

@@ -62,7 +62,7 @@ class PersonTracker:
             for i in range(0, len(frames), self.batch_size)
         ]
 
-    def _batch_person_detection(self, frames, conf_threshold=0.5):
+    def _batch_person_detection(self, frames, conf_threshold=0.3):
         """Batch person detection cho tất cả frames
 
         Args:
@@ -127,7 +127,7 @@ class PersonTracker:
         return all_person_detections
 
     def detect_and_track_persons(
-        self, frames, ball_positions, direction_flags, conf_threshold=0.5
+        self, frames, ball_positions, direction_flags, conf_threshold=0.3
     ):
         """Detect và track người qua các frame với batch inference
 

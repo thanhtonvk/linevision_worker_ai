@@ -82,8 +82,6 @@ class TennisVideoAnalysisService:
         video_path: str,
         court_bounds: List[Tuple[int, int]],
         output_folder: str,
-        ball_conf: float = 0.7,
-        person_conf: float = 0.6,
         pixels_per_meter: Optional[float] = None
     ) -> Dict:
         """
@@ -93,8 +91,6 @@ class TennisVideoAnalysisService:
             video_path: Path to video file
             court_bounds: List of 4 corner points defining the court
             output_folder: Folder to save output images
-            ball_conf: Ball detection confidence threshold
-            person_conf: Person detection confidence threshold
             pixels_per_meter: Optional conversion factor for real-world speed
 
         Returns:
@@ -125,7 +121,7 @@ class TennisVideoAnalysisService:
         # Process video in streaming mode
         print("\n[1/4] Processing video (streaming mode)...")
         ball_positions, person_detections, direction_flags = self._process_video_streaming(
-            video_path, ball_conf, person_conf, fps
+            video_path, fps
         )
 
         # Post-process ball positions
@@ -204,8 +200,6 @@ class TennisVideoAnalysisService:
     def _process_video_streaming(
         self,
         video_path: str,
-        ball_conf: float,
-        person_conf: float,
         fps: float
     ) -> Tuple[List, List, List]:
         """
@@ -240,15 +234,12 @@ class TennisVideoAnalysisService:
             if not batch_frames:
                 break
 
-            # Process batch - Ball detection
-            self.ball_detector.conf = ball_conf
+            # Process batch - Ball detection (uses default conf=0.3)
             batch_ball_positions = self.ball_detector.detect_positions(batch_frames)
             all_ball_positions.extend(batch_ball_positions)
 
-            # Process batch - Person + Pose detection
-            batch_person_detections = self.pose_estimator.detect_persons_with_pose(
-                batch_frames, person_conf
-            )
+            # Process batch - Person + Pose detection (uses default conf=0.3)
+            batch_person_detections = self.pose_estimator.detect_persons_with_pose(batch_frames)
             all_person_detections.extend(batch_person_detections)
 
             # Calculate direction flags for this batch

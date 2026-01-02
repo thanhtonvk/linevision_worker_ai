@@ -38,7 +38,7 @@ class BallDetector:
         self.person_model = YOLO(person_model_path)
         self.model_path = model_path
         self.batch_size = batch_size  # Increased for faster processing with 12GB GPU
-        self.conf = 0.7
+        self.conf = 0.3
 
 
     def read_video(self, video_path):
@@ -328,7 +328,7 @@ class BallDetector:
 
         return positions
 
-    def detect_persons(self, frames, person_conf=0.5):
+    def detect_persons(self, frames, person_conf=0.3):
         """Detect người trong frames với batch inference
 
         Args:
@@ -411,7 +411,7 @@ class BallDetector:
         frames,
         positions,
         angle_threshold=45,
-        person_conf=0.5,
+        person_conf=0.3,
         intersection_threshold=80,
         cached_person_detections=None,
     ):

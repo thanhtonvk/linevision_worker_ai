@@ -31,8 +31,8 @@ analyzer = TennisAnalysisModule(
     pose_model_path=settings.pose_model_path,
 )
 
-# Initialize VAR Detector
-var_detector = VarDetector(model_path=settings.ball_model_path, conf=0.8, batch_size=32)
+# Initialize VAR Detector (uses default conf=0.3)
+var_detector = VarDetector(model_path=settings.ball_model_path, batch_size=32)
 
 
 def create_player_analysis_service():
@@ -430,8 +430,6 @@ def process_player_analysis_async(
     court_bounds,
     request_output_folder,
     request_id,
-    ball_conf,
-    person_conf,
     court_id="",
     original_filename="",
 ):
@@ -447,13 +445,11 @@ def process_player_analysis_async(
         # Tạo instance mới của TennisVideoAnalysisService (thread safety)
         service = create_tennis_video_analysis_service()
 
-        # Phân tích video
+        # Phân tích video (uses default conf=0.3)
         result = service.analyze(
             video_path=video_path,
             court_bounds=court_bounds,
             output_folder=request_output_folder,
-            ball_conf=ball_conf,
-            person_conf=person_conf,
         )
 
         # Thêm metadata
@@ -568,8 +564,6 @@ def player_analysis_async():
         - court_bounds: JSON string của 4 điểm góc sân (required)
           Example: "[[100,100],[500,100],[500,600],[100,600]]"
         - court_id: ID của sân tennis (required)
-        - ball_conf: Ball detection confidence (default: 0.7)
-        - person_conf: Person detection confidence (default: 0.6)
 
     Returns:
         JSON xác nhận đã nhận request và bắt đầu xử lý
@@ -648,10 +642,6 @@ def player_analysis_async():
         request_output_folder = os.path.join(settings.output_folder, request_id)
         os.makedirs(request_output_folder, exist_ok=True)
 
-        # Lấy parameters từ request
-        ball_conf = float(request.form.get("ball_conf", settings.default_ball_conf))
-        person_conf = float(request.form.get("person_conf", settings.default_person_conf))
-
         # Submit vào GPU queue
         gpu_queue.submit(
             task_id=request_id,
@@ -661,8 +651,6 @@ def player_analysis_async():
                 court_bounds,
                 request_output_folder,
                 request_id,
-                ball_conf,
-                person_conf,
                 court_id,
                 original_filename,
             ),
@@ -724,8 +712,6 @@ def tennis_video_analysis():
         - court_bounds: JSON string của 4 điểm góc sân (required)
           Example: "[[100,100],[500,100],[500,600],[100,600]]"
         - court_id: ID của sân tennis (required)
-        - ball_conf: Ball detection confidence (default: 0.7)
-        - person_conf: Person detection confidence (default: 0.6)
 
     Returns:
         JSON với kết quả phân tích:
@@ -857,13 +843,7 @@ def tennis_video_analysis():
         request_output_folder = os.path.join(settings.output_folder, request_id)
         os.makedirs(request_output_folder, exist_ok=True)
 
-        # Get optional parameters
-        ball_conf = float(request.form.get("ball_conf", settings.default_ball_conf))
-        person_conf = float(
-            request.form.get("person_conf", settings.default_person_conf)
-        )
-
-        # Create service and analyze
+        # Create service and analyze (uses default conf=0.3)
         print(f"\n[TENNIS-ANALYSIS] Starting analysis for request: {request_id}")
         print(
             f"[TENNIS-ANALYSIS] Video duration: {duration_seconds:.1f}s, FPS: {fps:.1f}"
@@ -874,8 +854,6 @@ def tennis_video_analysis():
             video_path=video_path,
             court_bounds=court_bounds,
             output_folder=request_output_folder,
-            ball_conf=ball_conf,
-            person_conf=person_conf,
         )
 
         # Add metadata
