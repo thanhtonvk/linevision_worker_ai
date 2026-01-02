@@ -142,6 +142,26 @@ def convert_paths_to_urls(data, request_id, base_url):
         return data
 
 
+def convert_numpy_types(data):
+    """
+    Recursively convert numpy types to native Python types for JSON serialization.
+    """
+    import numpy as np
+
+    if isinstance(data, dict):
+        return {key: convert_numpy_types(value) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [convert_numpy_types(item) for item in data]
+    elif isinstance(data, np.floating):
+        return float(data)
+    elif isinstance(data, np.integer):
+        return int(data)
+    elif isinstance(data, np.ndarray):
+        return data.tolist()
+    else:
+        return data
+
+
 # =============================================================================
 # API ENDPOINTS
 # =============================================================================
@@ -869,6 +889,9 @@ def tennis_video_analysis():
 
         # Convert paths to URLs
         result = convert_paths_to_urls(result, request_id, settings.server_base_url)
+
+        # Convert numpy types to native Python types for JSON serialization
+        result = convert_numpy_types(result)
 
         # Callback to server with analysis results
         callback_data = {
