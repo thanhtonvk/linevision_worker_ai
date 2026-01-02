@@ -464,6 +464,9 @@ def process_player_analysis_async(
         # Convert tất cả paths thành full URLs
         result = convert_paths_to_urls(result, request_id, settings.server_base_url)
 
+        # Convert numpy types to native Python types for JSON serialization
+        result = convert_numpy_types(result)
+
         print(
             f"[ASYNC] Phân tích hoàn thành cho request {request_id}, file_name: {original_filename}"
         )
