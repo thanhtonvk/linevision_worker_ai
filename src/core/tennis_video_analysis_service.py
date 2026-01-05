@@ -21,6 +21,7 @@ from datetime import datetime
 
 from .ball_detector import BallDetector
 from .pose_estimator import PoseEstimator
+from .meme_analyzer import MemeAnalyzer
 from ..utils.court_geometry import CourtGeometry
 from config.settings import settings
 
@@ -75,6 +76,7 @@ class TennisVideoAnalysisService:
         self.player_hits = defaultdict(list)  # player_id -> list of hit events
         self.player_poses = defaultdict(list)  # player_id -> list of pose data
         self.player_images = {}  # player_id -> cropped image
+        self.player_positions = defaultdict(list)  # player_id -> [(frame, x, y), ...]
         self.next_player_id = 1
 
     def analyze(
@@ -155,13 +157,21 @@ class TennisVideoAnalysisService:
             ball_positions, direction_flags, court_geometry
         )
 
+        # 5. Create highlight videos and analyze memes
+        print("\n[5/5] Creating highlight videos and analyzing memes...")
+        highlights, meme_analysis = self._create_highlights_and_memes(
+            video_path, ball_positions, output_folder, fps
+        )
+
         print("\nAnalysis complete!")
 
         return {
             "highest_speed_player": highest_speed_player,
             "average_stats": average_stats,
             "player_rankings": player_rankings,
-            "match_statistics": match_statistics
+            "match_statistics": match_statistics,
+            "highlights": highlights,
+            "meme_analysis": meme_analysis
         }
 
     def _create_court_geometry(self, court_bounds: List[Tuple[int, int]]) -> CourtGeometry:
@@ -401,6 +411,12 @@ class TennisVideoAnalysisService:
                 "keypoint_conf": best_person.get("keypoint_conf")
             }
             self.player_poses[player_id].append(pose_data)
+
+            # Store player position for movement analysis
+            bbox = best_person["bbox"]
+            center_x = (bbox[0] + bbox[2]) / 2
+            center_y = (bbox[1] + bbox[3]) / 2
+            self.player_positions[player_id].append((frame_idx, center_x, center_y))
 
             # Store frame info for image extraction
             if player_id not in self.tracked_players:
@@ -783,3 +799,257 @@ class TennisVideoAnalysisService:
             rally_frames += last_hit_frame - rally_start
 
         return rally_frames / total_frames if total_frames > 0 else 0.0
+
+    def _create_highlights_and_memes(
+        self,
+        video_path: str,
+        ball_positions: List,
+        output_folder: str,
+        fps: float
+    ) -> Tuple[Dict, Dict]:
+        """
+        Create highlight videos for each player and analyze memes
+
+        Args:
+            video_path: Path to original video
+            ball_positions: List of ball positions
+            output_folder: Output folder for highlight videos
+            fps: Video FPS
+
+        Returns:
+            Tuple of (highlights_dict, meme_analysis_dict)
+        """
+        highlights = {}
+        meme_analysis = {}
+
+        # Skip if no player hits
+        if not self.player_hits:
+            print("  No player hits found, skipping highlights")
+            return highlights, meme_analysis
+
+        # Initialize MemeAnalyzer
+        try:
+            meme_analyzer = MemeAnalyzer()
+        except Exception as e:
+            print(f"  [WARN] Could not load MemeAnalyzer: {e}")
+            meme_analyzer = None
+
+        # Prepare player stats for meme analysis
+        player_stats = {}
+        for player_id in self.player_hits.keys():
+            hits = self.player_hits[player_id]
+            in_court_count = sum(1 for h in hits if h.get("in_court", False))
+            player_stats[player_id] = {
+                "accuracy": {
+                    "total_hits": len(hits),
+                    "in_court": in_court_count
+                }
+            }
+
+        # Analyze memes
+        if meme_analyzer:
+            try:
+                meme_analysis = meme_analyzer.analyze_shots(
+                    ball_positions=ball_positions,
+                    ball_hits_by_person=dict(self.player_hits),
+                    player_stats=player_stats,
+                    player_positions=dict(self.player_positions),
+                    fps=fps
+                )
+                print(f"  Meme analysis complete: {len(meme_analysis)} players analyzed")
+            except Exception as e:
+                print(f"  [WARN] Meme analysis failed: {e}")
+
+        # Read video frames for highlight creation
+        print("  Reading video frames for highlights...")
+        cap = cv2.VideoCapture(video_path)
+        frames = []
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frames.append(frame)
+        cap.release()
+
+        if not frames:
+            print("  No frames read, skipping highlights")
+            return highlights, meme_analysis
+
+        print(f"  Read {len(frames)} frames")
+
+        # Create highlight videos for each player
+        base_url = f"outputs/{os.path.basename(output_folder)}"
+
+        for player_id, hits in self.player_hits.items():
+            if len(hits) == 0:
+                continue
+
+            print(f"  Creating highlights for player {player_id} ({len(hits)} hits)...")
+
+            player_highlights = self._create_player_highlight_videos(
+                frames=frames,
+                player_id=player_id,
+                hits=hits,
+                output_folder=output_folder,
+                fps=fps,
+                base_url=base_url,
+                meme_analyzer=meme_analyzer,
+                meme_analysis=meme_analysis.get(player_id, {})
+            )
+
+            if player_highlights:
+                highlights[player_id] = player_highlights
+
+        # Clean up frames to free memory
+        del frames
+        gc.collect()
+
+        return highlights, meme_analysis
+
+    def _create_player_highlight_videos(
+        self,
+        frames: List,
+        player_id: int,
+        hits: List[Dict],
+        output_folder: str,
+        fps: float,
+        base_url: str,
+        meme_analyzer=None,
+        meme_analysis: Dict = None
+    ) -> Dict:
+        """
+        Create highlight videos for a single player
+
+        Args:
+            frames: All video frames
+            player_id: Player ID
+            hits: List of hit events for this player
+            output_folder: Output folder
+            fps: Video FPS
+            base_url: Base URL for video paths
+            meme_analyzer: MemeAnalyzer instance
+            meme_analysis: Meme analysis for this player
+
+        Returns:
+            Dict with highlight info
+        """
+        MIN_DURATION_SECONDS = 10
+        min_duration_frames = int(MIN_DURATION_SECONDS * fps)
+        padding_frames = 15
+        min_frames = 30
+
+        # Sort hits by frame
+        sorted_hits = sorted(hits, key=lambda h: h["frame"])
+
+        # Group hits into sequences (continuous hits within 3 seconds)
+        max_gap_frames = int(3 * fps)
+        sequences = []
+        current_sequence = [sorted_hits[0]]
+
+        for i in range(1, len(sorted_hits)):
+            if sorted_hits[i]["frame"] - sorted_hits[i-1]["frame"] <= max_gap_frames:
+                current_sequence.append(sorted_hits[i])
+            else:
+                sequences.append(current_sequence)
+                current_sequence = [sorted_hits[i]]
+        sequences.append(current_sequence)
+
+        # Create highlights for each sequence
+        highlight_clips = []
+        memes_for_player = meme_analysis.get("memes", []) if meme_analysis else []
+
+        for seq_idx, sequence in enumerate(sequences):
+            if len(sequence) == 0:
+                continue
+
+            # Collect frames for this sequence
+            highlight_frames_set = set()
+            for hit in sequence:
+                hit_frame = hit["frame"]
+                start_frame = max(0, hit_frame - padding_frames)
+                end_frame = min(len(frames), hit_frame + padding_frames + 1)
+                for f in range(start_frame, end_frame):
+                    highlight_frames_set.add(f)
+
+            highlight_frame_indices = sorted(list(highlight_frames_set))
+
+            if len(highlight_frame_indices) < min_frames:
+                continue
+
+            # Extend if less than minimum duration
+            if len(highlight_frame_indices) < min_duration_frames:
+                needed_frames = min_duration_frames - len(highlight_frame_indices)
+                extend_before = needed_frames // 2
+                extend_after = needed_frames - extend_before
+
+                first_frame = highlight_frame_indices[0]
+                last_frame = highlight_frame_indices[-1]
+
+                new_start = max(0, first_frame - extend_before)
+                for f in range(new_start, first_frame):
+                    highlight_frames_set.add(f)
+
+                new_end = min(len(frames), last_frame + extend_after + 1)
+                for f in range(last_frame + 1, new_end):
+                    highlight_frames_set.add(f)
+
+                highlight_frame_indices = sorted(list(highlight_frames_set))
+
+            # Get frame dimensions
+            first_frame = frames[highlight_frame_indices[0]]
+            height, width = first_frame.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+
+            # Create highlight video
+            highlight_filename = f"player_{player_id}_highlight_{seq_idx + 1}.mp4"
+            highlight_path = os.path.join(output_folder, highlight_filename)
+            out_highlight = cv2.VideoWriter(highlight_path, fourcc, fps, (width, height))
+
+            try:
+                for frame_idx in highlight_frame_indices:
+                    frame = frames[frame_idx].copy()
+
+                    # Mark hit frames
+                    for hit in sequence:
+                        if hit["frame"] == frame_idx:
+                            ball_pos = hit["ball_pos"]
+                            cv2.circle(frame, (int(ball_pos[0]), int(ball_pos[1])), 15, (0, 0, 255), 3)
+                            cv2.putText(frame, "HIT!", (int(ball_pos[0]) + 20, int(ball_pos[1])),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+                            # Draw player bbox
+                            bbox = hit["bbox"]
+                            x1, y1, x2, y2 = bbox
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(frame, f"Player {player_id}", (x1, y1 - 10),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                            break
+
+                    out_highlight.write(frame)
+            finally:
+                out_highlight.release()
+
+            # Clip info
+            clip_info = {
+                "highlight_video": f"{base_url}/{highlight_filename}",
+                "clip_index": seq_idx + 1,
+                "hit_count": len(sequence),
+                "total_frames": len(highlight_frame_indices),
+                "duration_seconds": round(len(highlight_frame_indices) / fps, 2),
+                "start_frame": highlight_frame_indices[0],
+                "end_frame": highlight_frame_indices[-1],
+                "hits": [{"frame": h["frame"], "ball_pos": h["ball_pos"], "speed": h.get("speed", 0)} for h in sequence]
+            }
+            highlight_clips.append(clip_info)
+
+        if not highlight_clips:
+            return None
+
+        return {
+            "player_id": player_id,
+            "highlights": highlight_clips,
+            "total_clips": len(highlight_clips),
+            "total_hits": len(hits),
+            "total_duration_seconds": round(sum(c["duration_seconds"] for c in highlight_clips), 2),
+            "memes": memes_for_player
+        }
