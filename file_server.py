@@ -6,12 +6,20 @@
 # =============================================================================
 
 from flask import Flask, send_from_directory, jsonify, request
-from flask_cors import CORS
 from config.settings import settings
 import os
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for cross-origin requests
+
+
+# Simple CORS support without flask_cors dependency
+@app.after_request
+def add_cors_headers(response):
+    """Add CORS headers to all responses"""
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
 
 # Configuration
 app.config["OUTPUT_FOLDER"] = settings.output_folder
