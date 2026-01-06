@@ -390,6 +390,12 @@ class TennisVideoAnalysisService:
             # Check if in court
             in_court = court_geometry.is_point_in_court(landing_pos) if landing_pos else False
 
+            # Check if ball crossed net
+            crossed_net = self._check_ball_crossed_net(ball_positions, frame_idx, court_geometry)
+
+            # Determine hit type: serve or return
+            hit_type = self._classify_hit_type(player_id, frame_idx, direction_flags, fps)
+
             # Store hit data
             hit_data = {
                 "frame": frame_idx,
@@ -398,6 +404,8 @@ class TennisVideoAnalysisService:
                 "ball_pos": ball_pos,
                 "landing_pos": landing_pos,
                 "in_court": in_court,
+                "crossed_net": crossed_net,
+                "hit_type": hit_type,  # "serve" or "return"
                 "bbox": best_person["bbox"]
             }
             self.player_hits[player_id].append(hit_data)
@@ -533,6 +541,85 @@ class TennisVideoAnalysisService:
                     return ball_positions[i]
         return None
 
+    def _check_ball_crossed_net(
+        self,
+        ball_positions: List,
+        hit_frame: int,
+        court_geometry: CourtGeometry,
+        max_frames: int = 60
+    ) -> bool:
+        """
+        Check if ball crossed the net after a hit
+        Uses the net_y position from court geometry
+        """
+        if hit_frame >= len(ball_positions):
+            return False
+
+        hit_pos = ball_positions[hit_frame]
+        if hit_pos == (-1, -1):
+            return False
+
+        # Get net position (middle of court vertically)
+        net_y = court_geometry.get_net_y() if hasattr(court_geometry, 'get_net_y') else None
+        if net_y is None:
+            # Estimate net as middle of court bounds
+            court_bounds = court_geometry.get_bounds() if hasattr(court_geometry, 'get_bounds') else None
+            if court_bounds:
+                net_y = (court_bounds[1] + court_bounds[3]) / 2
+            else:
+                return True  # Assume crossed if we can't determine
+
+        # Check if ball trajectory crosses net
+        for i in range(hit_frame + 1, min(hit_frame + max_frames, len(ball_positions))):
+            curr_pos = ball_positions[i]
+            if curr_pos == (-1, -1):
+                continue
+
+            # Check if ball moved from one side of net to the other
+            if (hit_pos[1] < net_y and curr_pos[1] > net_y) or \
+               (hit_pos[1] > net_y and curr_pos[1] < net_y):
+                return True
+
+        return False
+
+    def _classify_hit_type(
+        self,
+        player_id: int,
+        frame_idx: int,
+        direction_flags: List,
+        fps: float
+    ) -> str:
+        """
+        Classify hit as 'serve' or 'return'
+        Serve: first hit after a pause (no hits for > 3 seconds)
+        Return: all other hits
+        """
+        # Get previous hits for this player
+        player_hits = self.player_hits.get(player_id, [])
+
+        if len(player_hits) == 0:
+            # First hit - check if it's start of a rally (likely serve)
+            # Look back to see if there were any hits in last 3 seconds
+            pause_frames = int(3 * fps)
+            has_recent_hit = False
+
+            for i in range(max(0, frame_idx - pause_frames), frame_idx):
+                if i < len(direction_flags) and direction_flags[i] == 2:
+                    has_recent_hit = True
+                    break
+
+            return "serve" if not has_recent_hit else "return"
+
+        # Check time since last hit
+        last_hit = player_hits[-1]
+        time_since_last = (frame_idx - last_hit["frame"]) / fps
+
+        # If > 3 seconds since last hit, likely a new serve
+        if time_since_last > 3.0:
+            return "serve"
+
+        return "return"
+
     def _extract_player_images(self, video_path: str, output_folder: str):
         """
         Extract player images from video (second pass)
@@ -637,25 +724,55 @@ class TennisVideoAnalysisService:
         output_folder: str
     ) -> List[Dict]:
         """
-        Calculate player rankings based on multiple factors
+        Calculate player rankings based on multiple factors with detailed statistics
         """
         player_stats = []
+        base_url = f"outputs/{os.path.basename(output_folder)}"
 
         for player_id in self.player_hits.keys():
             hits = self.player_hits[player_id]
             poses = self.player_poses.get(player_id, [])
+            positions = self.player_positions.get(player_id, [])
 
             if not hits:
                 continue
 
-            # Calculate in-court ratio
+            # === DETAILED HIT STATISTICS ===
+            # Separate by hit type
+            serves = [h for h in hits if h.get("hit_type") == "serve"]
+            returns = [h for h in hits if h.get("hit_type") == "return"]
+
+            # Total accuracy stats
             total_hits = len(hits)
             in_court_count = sum(1 for h in hits if h.get("in_court", False))
+            out_court_count = sum(1 for h in hits if not h.get("in_court", False) and h.get("crossed_net", True))
+            not_crossed_net = sum(1 for h in hits if not h.get("crossed_net", True))
+
+            # Serve stats
+            serve_total = len(serves)
+            serve_in_court = sum(1 for h in serves if h.get("in_court", False))
+            serve_out_court = sum(1 for h in serves if not h.get("in_court", False) and h.get("crossed_net", True))
+            serve_not_crossed = sum(1 for h in serves if not h.get("crossed_net", True))
+            serve_speeds = [h["speed"] for h in serves if h["speed"] > 0]
+            serve_avg_speed = round(np.mean(serve_speeds), 2) if serve_speeds else 0
+            serve_max_speed = round(max(serve_speeds), 2) if serve_speeds else 0
+
+            # Return/Drive stats
+            return_total = len(returns)
+            return_in_court = sum(1 for h in returns if h.get("in_court", False))
+            return_out_court = sum(1 for h in returns if not h.get("in_court", False) and h.get("crossed_net", True))
+            return_not_crossed = sum(1 for h in returns if not h.get("crossed_net", True))
+            return_speeds = [h["speed"] for h in returns if h["speed"] > 0]
+            return_avg_speed = round(np.mean(return_speeds), 2) if return_speeds else 0
+            return_max_speed = round(max(return_speeds), 2) if return_speeds else 0
+
+            # Overall ratios
             in_court_ratio = in_court_count / total_hits if total_hits > 0 else 0
 
             # Calculate average hit speed
-            speeds = [h["speed"] for h in hits if h["speed"] > 0]
-            avg_speed = np.mean(speeds) if speeds else 0
+            all_speeds = [h["speed"] for h in hits if h["speed"] > 0]
+            avg_speed = np.mean(all_speeds) if all_speeds else 0
+            max_speed = max(all_speeds) if all_speeds else 0
 
             # Calculate average angles
             shoulder_angles = [p["shoulder_angle"] for p in poses if p["shoulder_angle"] > 0]
@@ -664,6 +781,13 @@ class TennisVideoAnalysisService:
             avg_shoulder = np.mean(shoulder_angles) if shoulder_angles else 0
             avg_knee = np.mean(knee_angles) if knee_angles else 0
 
+            # === GENERATE HEATMAP ===
+            heatmap_filename = f"player_{player_id}_heatmap.jpg"
+            heatmap_path = os.path.join(output_folder, heatmap_filename)
+            heatmap_url = self._generate_court_heatmap(
+                positions, court_geometry, heatmap_path
+            )
+
             # Calculate composite score
             score = self._calculate_score(in_court_ratio, avg_speed, avg_shoulder, avg_knee)
 
@@ -671,8 +795,42 @@ class TennisVideoAnalysisService:
                 "player_id": player_id,
                 "score": round(score, 2),
                 "player_image_url": self.player_images.get(player_id),
-                "in_court_ratio": round(in_court_ratio, 4),
+                "heatmap_url": f"{base_url}/{heatmap_filename}" if heatmap_url else None,
+
+                # Overall accuracy
+                "accuracy": {
+                    "total_hits": total_hits,
+                    "in_court": in_court_count,
+                    "out_court": out_court_count,
+                    "not_crossed_net": not_crossed_net,
+                    "in_court_ratio": round(in_court_ratio, 4)
+                },
+
+                # Serve statistics
+                "serve_stats": {
+                    "total": serve_total,
+                    "in_court": serve_in_court,
+                    "out_court": serve_out_court,
+                    "not_crossed_net": serve_not_crossed,
+                    "avg_speed": serve_avg_speed,
+                    "max_speed": serve_max_speed
+                },
+
+                # Return/Drive statistics
+                "return_stats": {
+                    "total": return_total,
+                    "in_court": return_in_court,
+                    "out_court": return_out_court,
+                    "not_crossed_net": return_not_crossed,
+                    "avg_speed": return_avg_speed,
+                    "max_speed": return_max_speed
+                },
+
+                # Speed stats
                 "avg_hit_speed": round(avg_speed, 2),
+                "max_hit_speed": round(max_speed, 2),
+
+                # Pose stats
                 "avg_shoulder_angle": round(avg_shoulder, 2),
                 "avg_knee_bend_angle": round(avg_knee, 2)
             })
@@ -685,6 +843,98 @@ class TennisVideoAnalysisService:
             stats["rank"] = i + 1
 
         return player_stats
+
+    def _generate_court_heatmap(
+        self,
+        positions: List[Tuple],
+        court_geometry: CourtGeometry,
+        output_path: str,
+        size: Tuple[int, int] = (400, 600)
+    ) -> Optional[str]:
+        """
+        Generate a heatmap showing player court coverage
+
+        Args:
+            positions: List of (frame, x, y) tuples
+            court_geometry: Court geometry for bounds
+            output_path: Path to save heatmap image
+            size: Output image size (width, height)
+
+        Returns:
+            Output path if successful, None otherwise
+        """
+        if not positions:
+            return None
+
+        try:
+            width, height = size
+
+            # Create blank heatmap
+            heatmap = np.zeros((height, width), dtype=np.float32)
+
+            # Get court bounds for normalization
+            court_bounds = court_geometry.get_bounds() if hasattr(court_geometry, 'get_bounds') else None
+            if court_bounds:
+                min_x, min_y, max_x, max_y = court_bounds
+            else:
+                # Use position bounds
+                x_coords = [p[1] for p in positions]
+                y_coords = [p[2] for p in positions]
+                min_x, max_x = min(x_coords), max(x_coords)
+                min_y, max_y = min(y_coords), max(y_coords)
+
+            # Add margin
+            x_range = max_x - min_x if max_x > min_x else 1
+            y_range = max_y - min_y if max_y > min_y else 1
+
+            # Normalize positions and accumulate heatmap
+            for _, x, y in positions:
+                # Normalize to image coordinates
+                norm_x = int((x - min_x) / x_range * (width - 1))
+                norm_y = int((y - min_y) / y_range * (height - 1))
+
+                # Clamp values
+                norm_x = max(0, min(width - 1, norm_x))
+                norm_y = max(0, min(height - 1, norm_y))
+
+                # Add gaussian-like point
+                for dy in range(-15, 16):
+                    for dx in range(-15, 16):
+                        py, px = norm_y + dy, norm_x + dx
+                        if 0 <= py < height and 0 <= px < width:
+                            dist = math.sqrt(dx*dx + dy*dy)
+                            if dist < 15:
+                                heatmap[py, px] += math.exp(-dist * dist / 50)
+
+            # Normalize to 0-255
+            if heatmap.max() > 0:
+                heatmap = (heatmap / heatmap.max() * 255).astype(np.uint8)
+
+            # Apply colormap
+            heatmap_colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+
+            # Draw court outline
+            court_color = (255, 255, 255)
+            cv2.rectangle(heatmap_colored, (10, 10), (width-10, height-10), court_color, 2)
+
+            # Draw net line (horizontal middle)
+            net_y = height // 2
+            cv2.line(heatmap_colored, (10, net_y), (width-10, net_y), court_color, 2)
+
+            # Draw service boxes
+            cv2.line(heatmap_colored, (width//2, 10), (width//2, height-10), court_color, 1)
+
+            # Add title
+            cv2.putText(heatmap_colored, "Court Coverage", (10, 25),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+            # Save
+            cv2.imwrite(output_path, heatmap_colored)
+            return output_path
+
+        except Exception as e:
+            print(f"  [WARN] Failed to generate heatmap: {e}")
+            return None
 
     def _calculate_score(
         self,
@@ -1005,6 +1255,11 @@ class TennisVideoAnalysisService:
             highlight_path = os.path.join(output_folder, highlight_filename)
             out_highlight = cv2.VideoWriter(highlight_path, fourcc, fps, (width, height))
 
+            # Save cropped player image from the best hit in this sequence
+            player_crop_filename = f"player_{player_id}_highlight_{seq_idx + 1}_crop.jpg"
+            player_crop_path = os.path.join(output_folder, player_crop_filename)
+            best_crop_saved = False
+
             try:
                 for frame_idx in highlight_frame_indices:
                     frame = frames[frame_idx].copy()
@@ -1023,6 +1278,20 @@ class TennisVideoAnalysisService:
                             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                             cv2.putText(frame, f"Player {player_id}", (x1, y1 - 10),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                            # Save cropped player image (only once per highlight clip)
+                            if not best_crop_saved:
+                                # Add padding to crop
+                                pad = 20
+                                crop_x1 = max(0, int(x1) - pad)
+                                crop_y1 = max(0, int(y1) - pad)
+                                crop_x2 = min(width, int(x2) + pad)
+                                crop_y2 = min(height, int(y2) + pad)
+
+                                player_crop = frames[frame_idx][crop_y1:crop_y2, crop_x1:crop_x2]
+                                if player_crop.size > 0:
+                                    cv2.imwrite(player_crop_path, player_crop)
+                                    best_crop_saved = True
                             break
 
                     out_highlight.write(frame)
@@ -1032,6 +1301,7 @@ class TennisVideoAnalysisService:
             # Clip info
             clip_info = {
                 "highlight_video": f"{base_url}/{highlight_filename}",
+                "player_image": f"{base_url}/{player_crop_filename}" if best_crop_saved else None,
                 "clip_index": seq_idx + 1,
                 "hit_count": len(sequence),
                 "total_frames": len(highlight_frame_indices),

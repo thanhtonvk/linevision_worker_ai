@@ -143,10 +143,33 @@ def serve_output_file(folder, filename):
         from flask import request
 
         file_path = os.path.join(app.config["OUTPUT_FOLDER"], folder)
+        full_file_path = os.path.join(file_path, filename)
+
+        # Debug logging
+        print(f"[SERVE FILE] Requested: /outputs/{folder}/{filename}")
+        print(f"[SERVE FILE] Looking in directory: {file_path}")
+        print(f"[SERVE FILE] Full path: {full_file_path}")
+        print(f"[SERVE FILE] Directory exists: {os.path.exists(file_path)}")
+        print(f"[SERVE FILE] File exists: {os.path.exists(full_file_path)}")
+
+        if not os.path.exists(full_file_path):
+            # List files in directory if it exists
+            if os.path.exists(file_path):
+                files_in_dir = os.listdir(file_path)
+                print(f"[SERVE FILE] Files in directory: {files_in_dir}")
+            return jsonify({
+                "error": "File not found",
+                "requested_file": filename,
+                "directory": file_path,
+                "directory_exists": os.path.exists(file_path),
+                "file_exists": os.path.exists(full_file_path)
+            }), 404
+
         # Check if download parameter is set
         download = request.args.get("download", "false").lower() == "true"
         return send_from_directory(file_path, filename, as_attachment=download)
     except Exception as e:
+        print(f"[SERVE FILE ERROR] {str(e)}")
         return jsonify({"error": str(e)}), 404
 
 

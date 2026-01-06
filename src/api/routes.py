@@ -109,14 +109,14 @@ def generate_file_url(filename, folder):
     return url_for("serve_file", folder=folder, filename=filename, _external=True)
 
 
-def convert_paths_to_urls(data, request_id, base_url):
+def convert_paths_to_urls(data, request_id, file_server_url):
     """
     Đệ quy convert tất cả các đường dẫn file trong dict thành full URL
 
     Args:
         data: Dict hoặc value cần convert
         request_id: ID của request để tạo URL
-        base_url: Base URL của server (e.g., http://localhost:5000/)
+        file_server_url: File server URL for serving files (e.g., https://download-linevision.ngrok.app)
 
     Returns:
         Dict với các path đã được convert thành URL
@@ -124,10 +124,10 @@ def convert_paths_to_urls(data, request_id, base_url):
     if isinstance(data, dict):
         result = {}
         for key, value in data.items():
-            result[key] = convert_paths_to_urls(value, request_id, base_url)
+            result[key] = convert_paths_to_urls(value, request_id, file_server_url)
         return result
     elif isinstance(data, list):
-        return [convert_paths_to_urls(item, request_id, base_url) for item in data]
+        return [convert_paths_to_urls(item, request_id, file_server_url) for item in data]
     elif isinstance(data, str):
         # Kiểm tra nếu là đường dẫn file (chứa outputs/ hoặc kết thúc bằng extension)
         file_extensions = (".png", ".jpg", ".jpeg", ".mp4", ".avi", ".mov", ".json")
@@ -135,7 +135,7 @@ def convert_paths_to_urls(data, request_id, base_url):
             f"outputs/{request_id}" in data and data.lower().endswith(file_extensions)
         ):
             # Tạo full URL với đường dẫn /outputs/
-            full_url = f"{base_url.rstrip('/')}/{data}"
+            full_url = f"{file_server_url.rstrip('/')}/{data}"
             return full_url
         return data
     else:
@@ -233,8 +233,8 @@ def process_var_async(video_path, request_output_folder, request_id, callback_ur
             shutil.copy2(results["mask"], mask_output_path)
             os.remove(results["mask"])  # Xóa file tạm
 
-        # Tạo URLs với base URL từ settings
-        base_url = settings.server_base_url.rstrip("/")
+        # Tạo URLs với file server URL
+        base_url = settings.file_server_url.rstrip("/")
         crop_view_url = f"{base_url}/outputs/{request_id}/{crop_filename}"
         mask_view_url = f"{base_url}/outputs/{request_id}/{mask_filename}"
 
@@ -461,8 +461,8 @@ def process_player_analysis_async(
             datetime.now() + timedelta(hours=settings.cleanup_hours)
         ).isoformat()
 
-        # Convert tất cả paths thành full URLs
-        result = convert_paths_to_urls(result, request_id, settings.server_base_url)
+        # Convert tất cả paths thành full URLs (sử dụng file server URL)
+        result = convert_paths_to_urls(result, request_id, settings.file_server_url)
 
         # Convert numpy types to native Python types for JSON serialization
         result = convert_numpy_types(result)
@@ -868,8 +868,8 @@ def tennis_video_analysis():
             datetime.now() + timedelta(hours=settings.cleanup_hours)
         ).isoformat()
 
-        # Convert paths to URLs
-        result = convert_paths_to_urls(result, request_id, settings.server_base_url)
+        # Convert paths to URLs (use file server URL)
+        result = convert_paths_to_urls(result, request_id, settings.file_server_url)
 
         # Convert numpy types to native Python types for JSON serialization
         result = convert_numpy_types(result)
