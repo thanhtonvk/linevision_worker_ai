@@ -203,7 +203,7 @@ def index():
     <h3>⚠️ Important Notes:</h3>
     <ul>
         <li><b>Auto Cleanup:</b> Files are automatically deleted after 3 hours</li>
-        <li><b>File Server:</b> Output files are served from https://download-linevision.ngrok.app</li>
+        <li><b>File Server:</b> Output files are served from https://var-linevision.ngrok.app</li>
     </ul>
     """
     return docs

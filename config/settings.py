@@ -31,7 +31,7 @@ DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "https://pretyphoid-cyndy-goatishly.ngrok-free.dev")
 
 # File server URL for serving files (separate server to reduce load on main API)
-FILE_SERVER_URL = os.getenv("FILE_SERVER_URL", "https://download-linevision.ngrok.app")
+FILE_SERVER_URL = os.getenv("FILE_SERVER_URL", "https://var-linevision.ngrok.app")
 
 # File upload settings
 MAX_CONTENT_LENGTH = 500 * 1024 * 1024  # 500MB
