@@ -1255,17 +1255,21 @@ class TennisVideoAnalysisService:
             highlight_path = os.path.join(output_folder, highlight_filename)
             out_highlight = cv2.VideoWriter(highlight_path, fourcc, fps, (width, height))
 
-            # Save cropped player image from the best hit in this sequence
+            # Save cropped player image from the best hit in this sequence (for clip thumbnail)
             player_crop_filename = f"player_{player_id}_highlight_{seq_idx + 1}_crop.jpg"
             player_crop_path = os.path.join(output_folder, player_crop_filename)
             best_crop_saved = False
+
+            # Track hit crops for each individual hit
+            hit_crops = []
+            hit_crop_counter = 0
 
             try:
                 for frame_idx in highlight_frame_indices:
                     frame = frames[frame_idx].copy()
 
                     # Mark hit frames
-                    for hit in sequence:
+                    for hit_idx, hit in enumerate(sequence):
                         if hit["frame"] == frame_idx:
                             ball_pos = hit["ball_pos"]
                             cv2.circle(frame, (int(ball_pos[0]), int(ball_pos[1])), 15, (0, 0, 255), 3)
@@ -1275,21 +1279,37 @@ class TennisVideoAnalysisService:
                             # Draw player bbox
                             bbox = hit["bbox"]
                             x1, y1, x2, y2 = bbox
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            cv2.putText(frame, f"Player {player_id}", (x1, y1 - 10),
+                            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                            cv2.putText(frame, f"Player {player_id}", (int(x1), int(y1) - 10),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-                            # Save cropped player image (only once per highlight clip)
-                            if not best_crop_saved:
-                                # Add padding to crop
-                                pad = 20
-                                crop_x1 = max(0, int(x1) - pad)
-                                crop_y1 = max(0, int(y1) - pad)
-                                crop_x2 = min(width, int(x2) + pad)
-                                crop_y2 = min(height, int(y2) + pad)
+                            # Add padding to crop
+                            pad = 30
+                            crop_x1 = max(0, int(x1) - pad)
+                            crop_y1 = max(0, int(y1) - pad)
+                            crop_x2 = min(width, int(x2) + pad)
+                            crop_y2 = min(height, int(y2) + pad)
 
-                                player_crop = frames[frame_idx][crop_y1:crop_y2, crop_x1:crop_x2]
-                                if player_crop.size > 0:
+                            player_crop = frames[frame_idx][crop_y1:crop_y2, crop_x1:crop_x2]
+
+                            if player_crop.size > 0:
+                                # Save crop for each individual hit
+                                hit_crop_counter += 1
+                                hit_crop_filename = f"player_{player_id}_highlight_{seq_idx + 1}_hit_{hit_crop_counter}.jpg"
+                                hit_crop_path = os.path.join(output_folder, hit_crop_filename)
+                                cv2.imwrite(hit_crop_path, player_crop)
+                                hit_crops.append({
+                                    "hit_index": hit_crop_counter,
+                                    "frame": frame_idx,
+                                    "image_url": f"{base_url}/{hit_crop_filename}",
+                                    "speed": hit.get("speed", 0),
+                                    "hit_type": hit.get("hit_type", "unknown"),
+                                    "in_court": hit.get("in_court", False),
+                                    "crossed_net": hit.get("crossed_net", True)
+                                })
+
+                                # Also save first crop as the main clip thumbnail
+                                if not best_crop_saved:
                                     cv2.imwrite(player_crop_path, player_crop)
                                     best_crop_saved = True
                             break
@@ -1298,17 +1318,18 @@ class TennisVideoAnalysisService:
             finally:
                 out_highlight.release()
 
-            # Clip info
+            # Clip info with individual hit images
             clip_info = {
                 "highlight_video": f"{base_url}/{highlight_filename}",
                 "player_image": f"{base_url}/{player_crop_filename}" if best_crop_saved else None,
+                "hit_images": hit_crops,  # List of crop images for each hit
                 "clip_index": seq_idx + 1,
                 "hit_count": len(sequence),
                 "total_frames": len(highlight_frame_indices),
                 "duration_seconds": round(len(highlight_frame_indices) / fps, 2),
                 "start_frame": highlight_frame_indices[0],
                 "end_frame": highlight_frame_indices[-1],
-                "hits": [{"frame": h["frame"], "ball_pos": h["ball_pos"], "speed": h.get("speed", 0)} for h in sequence]
+                "hits": [{"frame": h["frame"], "ball_pos": h["ball_pos"], "speed": h.get("speed", 0), "hit_type": h.get("hit_type", "unknown")} for h in sequence]
             }
             highlight_clips.append(clip_info)
 

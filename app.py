@@ -1,5 +1,5 @@
 # =============================================================================
-# FLASK API FOR TENNIS ANALYSIS MODULE
+# FLASK API FOR VAR (Video Assistant Referee)
 # =============================================================================
 
 from flask import Flask, send_from_directory, jsonify
@@ -184,45 +184,29 @@ def index():
     API documentation page
     """
     docs = """
-    <h1>Tennis Analysis API</h1>
+    <h1>VAR (Video Assistant Referee) API</h1>
     <h2>Endpoints:</h2>
     <ul>
         <li><b>GET /api/health</b> - Health check</li>
-        <li><b>POST /api/analyze</b> - Analyze tennis video
+        <li><b>POST /api/check_var-async</b> - VAR analysis (async with callback)
             <ul>
                 <li>Parameters (form-data):
                     <ul>
                         <li>video (file, required): Video file</li>
-                        <li>ball_conf (float, optional): Ball detection confidence (default: 0.7)</li>
-                        <li>person_conf (float, optional): Person detection confidence (default: 0.6)</li>
-                        <li>angle_threshold (float, optional): Angle threshold (default: 50)</li>
-                        <li>intersection_threshold (float, optional): Intersection threshold (default: 100)</li>
-                        <li>court_bounds (string, optional): Court bounds as "x1,y1,x2,y2" (default: "100,100,400,500")</li>
+                        <li>callback_url (string, optional): Callback URL (default: http://linevision.asia/save_var)</li>
                     </ul>
                 </li>
+                <li>Returns: JSON with request_id and queue status</li>
             </ul>
         </li>
-        <li><b>POST /api/check_var</b> - VAR (Video Assistant Referee) analysis for football videos
-            <ul>
-                <li>Parameters (form-data):
-                    <ul>
-                        <li>video (file, required): Video file</li>
-                    </ul>
-                </li>
-                <li>Returns: JSON with URLs to processed videos (crop, mask) and original video path</li>
-            </ul>
-        </li>
-        <li><b>GET /files/&lt;folder&gt;/&lt;filename&gt;</b> - Serve output files</li>
+        <li><b>GET /api/gpu-queue-status</b> - Get GPU queue status</li>
+        <li><b>GET /api/task-status/&lt;task_id&gt;</b> - Get task status</li>
         <li><b>GET /api/results/&lt;request_id&gt;</b> - Get all files for a request</li>
     </ul>
-    <h3>Response Format:</h3>
-    <p>API trả về trực tiếp JSON result, không có wrapper {success: true, data: ...}</p>
     <h3>⚠️ Important Notes:</h3>
     <ul>
-        <li><b>Auto Cleanup:</b> Files (images and videos) are automatically deleted after 10 minutes to save disk space</li>
-        <li><b>Download Files:</b> Make sure to download important results within 10 minutes</li>
-        <li><b>Cleanup Schedule:</b> Cleanup runs every 1 minute in the background</li>
-        <li><b>Expiration Time:</b> Each response includes an 'expires_at' field showing when files will be deleted</li>
+        <li><b>Auto Cleanup:</b> Files are automatically deleted after 3 hours</li>
+        <li><b>File Server:</b> Output files are served from https://download-linevision.ngrok.app</li>
     </ul>
     """
     return docs
@@ -252,7 +236,7 @@ if __name__ == "__main__":
 
     WSGIRequestHandler.protocol_version = "HTTP/1.1"
 
-    print(f"🚀 Starting Tennis Analysis API on {settings.api_host}:{settings.api_port}")
+    print(f"🚀 Starting VAR API on {settings.api_host}:{settings.api_port}")
     print(f"📁 Upload folder: {settings.upload_folder}")
     print(f"📁 Output folder: {settings.output_folder}")
     print(f"🤖 Models loaded from: {settings.model_dir}")
