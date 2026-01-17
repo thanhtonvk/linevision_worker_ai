@@ -188,19 +188,16 @@ def index():
     <h2>Endpoints:</h2>
     <ul>
         <li><b>GET /api/health</b> - Health check</li>
-        <li><b>POST /api/check_var-async</b> - VAR analysis (async with callback)
+        <li><b>POST /api/check_var</b> - VAR analysis (synchronous)
             <ul>
                 <li>Parameters (form-data):
                     <ul>
                         <li>video (file, required): Video file</li>
-                        <li>callback_url (string, optional): Callback URL (default: http://linevision.asia/save_var)</li>
                     </ul>
                 </li>
-                <li>Returns: JSON with request_id and queue status</li>
+                <li>Returns: JSON with crop/mask video URLs</li>
             </ul>
         </li>
-        <li><b>GET /api/gpu-queue-status</b> - Get GPU queue status</li>
-        <li><b>GET /api/task-status/&lt;task_id&gt;</b> - Get task status</li>
         <li><b>GET /api/results/&lt;request_id&gt;</b> - Get all files for a request</li>
     </ul>
     <h3>⚠️ Important Notes:</h3>

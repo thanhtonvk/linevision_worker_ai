@@ -5,7 +5,6 @@
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
 from src.core.var_detector import VarDetector
-from src.core.gpu_queue_manager import gpu_queue
 from config.settings import settings
 import os
 import uuid
@@ -14,7 +13,6 @@ import traceback
 import shutil
 import threading
 import time
-import requests
 
 # Create Blueprint
 api_bp = Blueprint("api", __name__)
@@ -37,9 +35,7 @@ def allowed_file(filename):
 
 
 def schedule_folder_deletion(folder_path, delay_hours=3):
-    """
-    Lên lịch xóa folder sau một khoảng thời gian nhất định
-    """
+    """Lên lịch xóa folder sau một khoảng thời gian"""
     def delete_folder():
         try:
             time.sleep(delay_hours * 3600)
@@ -68,30 +64,6 @@ def health_check():
     })
 
 
-@api_bp.route("/api/gpu-queue-status", methods=["GET"])
-def get_gpu_queue_status():
-    """Lấy trạng thái của GPU queue"""
-    status = gpu_queue.get_queue_status()
-    return jsonify(status), 200
-
-
-@api_bp.route("/api/task-status/<task_id>", methods=["GET"])
-def get_task_status(task_id):
-    """Lấy trạng thái của một task cụ thể"""
-    task = gpu_queue.get_task(task_id)
-    if task is None:
-        return jsonify({"error": "Task not found"}), 404
-
-    return jsonify({
-        "task_id": task.task_id,
-        "status": task.status.value,
-        "created_at": task.created_at,
-        "started_at": task.started_at,
-        "completed_at": task.completed_at,
-        "error": task.error,
-    }), 200
-
-
 @api_bp.route("/api/results/<request_id>", methods=["GET"])
 def get_results(request_id):
     """Lấy danh sách tất cả files của một request"""
@@ -115,19 +87,52 @@ def get_results(request_id):
 
 
 # =============================================================================
-# VAR ASYNC PROCESSING
+# VAR CHECK ENDPOINT (SYNCHRONOUS)
 # =============================================================================
 
 
-def process_var_async(video_path, request_output_folder, request_id, callback_url=None):
+@api_bp.route("/api/check_var", methods=["POST"])
+def check_var():
     """
-    Xử lý VAR trong background với priority cao nhất.
+    Endpoint để kiểm tra VAR (Video Assistant Referee).
+    Xử lý đồng bộ và trả về kết quả ngay.
+
+    Parameters (form-data):
+        - video: Video file (required)
+
+    Returns:
+        JSON với kết quả phân tích VAR bao gồm URLs video crop và mask
     """
-    if callback_url is None:
-        callback_url = "http://linevision.asia/save_var"
+    video_path = None
+    request_output_folder = None
 
     try:
-        print(f"[VAR ASYNC] Bắt đầu xử lý VAR cho request {request_id}")
+        # Kiểm tra file có được upload không
+        if "video" not in request.files:
+            return jsonify({"error": "No video file provided"}), 400
+
+        file = request.files["video"]
+
+        if file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
+
+        if not allowed_file(file.filename):
+            return jsonify({
+                "error": f"Invalid file type. Allowed: {settings.allowed_extensions}"
+            }), 400
+
+        # Lưu video upload
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4().hex}_{filename}"
+        video_path = os.path.join(settings.upload_folder, unique_filename)
+        file.save(video_path)
+
+        # Tạo thư mục output riêng cho request này
+        request_id = uuid.uuid4().hex
+        request_output_folder = os.path.join(settings.output_folder, request_id)
+        os.makedirs(request_output_folder, exist_ok=True)
+
+        print(f"[VAR] Bắt đầu xử lý VAR cho request {request_id}")
 
         # Phân tích video với VAR Detector
         results = var_detector.detect_video(
@@ -182,7 +187,7 @@ def process_var_async(video_path, request_output_folder, request_id, callback_ur
             "status": "completed",
         }
 
-        print(f"[VAR ASYNC] Phân tích VAR hoàn thành cho request {request_id}")
+        print(f"[VAR] Phân tích VAR hoàn thành cho request {request_id}")
 
         # Xóa video upload sau khi xử lý xong
         try:
@@ -195,131 +200,24 @@ def process_var_async(video_path, request_output_folder, request_id, callback_ur
         # Schedule output folder cleanup
         schedule_folder_deletion(request_output_folder, settings.cleanup_hours)
 
-        # Gọi callback với retry logic
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                print(f"[VAR CALLBACK] Gửi kết quả đến {callback_url} (lần {attempt + 1}/{max_retries})")
-                response = requests.post(
-                    callback_url,
-                    json=result,
-                    headers={"Content-Type": "application/json"},
-                    timeout=30,
-                )
-
-                if response.status_code == 200:
-                    print(f"[VAR CALLBACK] Thành công cho request {request_id}")
-                    break
-                else:
-                    print(f"[VAR CALLBACK] Lỗi HTTP {response.status_code}: {response.text}")
-
-            except requests.exceptions.RequestException as e:
-                print(f"[VAR CALLBACK] Lỗi request (lần {attempt + 1}): {e}")
-
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                print(f"[VAR CALLBACK] Đợi {wait_time}s trước khi thử lại...")
-                time.sleep(wait_time)
-        else:
-            print(f"[VAR CALLBACK] Thất bại sau {max_retries} lần thử cho request {request_id}")
-
-        return result
+        return jsonify(result), 200
 
     except Exception as e:
-        print(f"[VAR ASYNC ERROR] Lỗi xử lý VAR request {request_id}: {e}")
+        print(f"[VAR ERROR] Lỗi xử lý VAR: {e}")
         print(traceback.format_exc())
 
         # Cleanup on error
-        try:
-            if os.path.exists(video_path):
+        if video_path and os.path.exists(video_path):
+            try:
                 os.remove(video_path)
-        except:
-            pass
-        try:
-            if os.path.exists(request_output_folder):
+            except:
+                pass
+        if request_output_folder and os.path.exists(request_output_folder):
+            try:
                 shutil.rmtree(request_output_folder)
-        except:
-            pass
+            except:
+                pass
 
-        # Gửi thông báo lỗi đến callback
-        error_payload = {"request_id": request_id, "status": "failed", "error": str(e)}
-
-        try:
-            requests.post(
-                callback_url,
-                json=error_payload,
-                headers={"Content-Type": "application/json"},
-                timeout=30,
-            )
-        except:
-            print(f"[VAR CALLBACK ERROR] Không thể gửi thông báo lỗi")
-
-        raise e
-
-
-@api_bp.route("/api/check_var-async", methods=["POST"])
-def check_var_async():
-    """
-    Endpoint để kiểm tra VAR (Video Assistant Referee) với PRIORITY CAO NHẤT.
-
-    Parameters (form-data):
-        - video: Video file (required)
-        - callback_url: URL để gọi callback khi hoàn thành (optional, default: http://linevision.asia/save_var)
-
-    Returns:
-        JSON xác nhận đã nhận request và bắt đầu xử lý với priority cao nhất
-    """
-    try:
-        # Kiểm tra file có được upload không
-        if "video" not in request.files:
-            return jsonify({"error": "No video file provided"}), 400
-
-        file = request.files["video"]
-
-        if file.filename == "":
-            return jsonify({"error": "No selected file"}), 400
-
-        if not allowed_file(file.filename):
-            return jsonify({
-                "error": f"Invalid file type. Allowed: {settings.allowed_extensions}"
-            }), 400
-
-        # Lưu video upload
-        filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4().hex}_{filename}"
-        video_path = os.path.join(settings.upload_folder, unique_filename)
-        file.save(video_path)
-
-        # Tạo thư mục output riêng cho request này
-        request_id = uuid.uuid4().hex
-        request_output_folder = os.path.join(settings.output_folder, request_id)
-        os.makedirs(request_output_folder, exist_ok=True)
-
-        # Lấy callback URL từ request (optional)
-        callback_url = request.form.get("callback_url", "http://linevision.asia/save_var")
-
-        # Submit vào GPU queue với priority VAR (cao nhất)
-        gpu_queue.submit_var(
-            task_id=request_id,
-            func=process_var_async,
-            args=(video_path, request_output_folder, request_id, callback_url),
-        )
-
-        # Lấy queue status
-        queue_status = gpu_queue.get_queue_status()
-
-        return jsonify({
-            "status": "queued",
-            "priority": "VAR (highest)",
-            "message": "VAR request đã được ưu tiên cao nhất.",
-            "request_id": request_id,
-            "queue_position": 1,
-            "queue_status": queue_status,
-            "callback_url": callback_url,
-            "var_status": queue_status.get("var_status", {}),
-        }), 202
-
-    except Exception as e:
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
 
