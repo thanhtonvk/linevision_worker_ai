@@ -98,14 +98,11 @@ class VarDetector:
             for i in range(0, len(frames), self.batch_size)
         ]
 
-    # --- Bước 2: Dò bóng YOLO ---
+    # --- Bước 2: Dò bóng YOLO (sequential - từng frame một) ---
     def detect_positions(self, frames):
-        batches = self.batch_frames(frames)
         positions = []
         with torch.no_grad():
-            for batch in batches:
-                if gpu_memory_full():
-                    self.reset_model()
+            for batch in frames:
                 results = self.model.predict(
                     batch,
                     batch=self.batch_size,
